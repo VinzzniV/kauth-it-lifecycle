@@ -54,8 +54,12 @@ export async function POST(request: Request) {
     const eventIds = record.events.map((item) => item.id);
     if (eventIds.length) await db.delete(lifecycleEvents).where(inArray(lifecycleEvents.id, eventIds));
     await db.insert(lifecycleEvents).values(record.events.map((item) => ({ ...item, employeeId: stored.id })));
-    if (record.services.length) await db.insert(services).values(record.services.map((item) => ({ ...item, details: item.details ?? "", employeeId: stored.id }))).onConflictDoNothing();
-    if (record.tasks.length) await db.insert(workflowTasks).values(record.tasks.map((item) => ({ ...item, employeeId: stored.id }))).onConflictDoNothing();
+    for (let index = 0; index < record.services.length; index += 8) {
+      await db.insert(services).values(record.services.slice(index, index + 8).map((item) => ({ ...item, details: item.details ?? "", employeeId: stored.id }))).onConflictDoNothing();
+    }
+    for (let index = 0; index < record.tasks.length; index += 8) {
+      await db.insert(workflowTasks).values(record.tasks.slice(index, index + 8).map((item) => ({ ...item, employeeId: stored.id }))).onConflictDoNothing();
+    }
     await db.insert(auditEntries).values({ employeeId: stored.id, action: "Import", detail: `${record.events[0]?.sourceFilename || "Datei"} eingelesen` });
     return Response.json({ ok: true, id: stored.id }, { status: 201 });
   } catch (error) {
