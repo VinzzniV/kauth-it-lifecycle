@@ -43,6 +43,7 @@ const jobSchema = z.discriminatedUnion("operation", [
         })
         .passthrough(),
       adCredential: adCredentialSchema,
+      helpdeskCredential: adCredentialSchema.optional(),
       helpdesk: z.object({
         baseUrl: z.string(),
         subject: z.string(),
@@ -87,6 +88,17 @@ const jobSchema = z.discriminatedUnion("operation", [
 export async function POST(request: Request) {
   try {
     const job = jobSchema.parse(await request.json());
+    if (
+      job.operation === "execute" &&
+      job.requestedMode === "Execute" &&
+      job.actions.some((action) => action.type === "CreateHelpdeskTicket") &&
+      !job.helpdeskCredential
+    ) {
+      return Response.json(
+        { error: "Für die echte Ausführung fehlen die HelpDesk-Zugangsdaten." },
+        { status: 400 },
+      );
+    }
     const db = getDb();
     const now = new Date().toISOString();
     await db
@@ -139,7 +151,7 @@ export async function GET(request: Request) {
         { status: 400 },
       );
     const response = await readManagementAgentResult(jobId);
-    if (response.status === 202 || response.status === 404)
+    if (response.status === 202)
       return Response.json({ status: "running" }, { status: 202 });
     if (!response.ok)
       return Response.json(

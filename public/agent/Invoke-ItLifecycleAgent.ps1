@@ -1,9 +1,10 @@
-[CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'High')]
+[CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
     [ValidateScript({ Test-Path -LiteralPath $_ -PathType Leaf })]
     [string]$JobPath,
     [string]$CredentialPath = '',
+    [string]$HelpdeskCredentialPath = '',
     [ValidateSet('Job', 'WhatIf', 'Execute')]
     [string]$Mode = 'Job'
 )
@@ -26,6 +27,7 @@ $runStatus = 'completed'
 $runError = ''
 $referenceLookup = $null
 $adCredential = $null
+$helpdeskCredential = $null
 
 function Add-RunLog {
     param([string]$Action, [string]$State, [string]$Message)
@@ -44,9 +46,9 @@ function Add-Change {
 function Invoke-ApprovedAction {
     param([string]$Action, [string]$Target, [scriptblock]$Operation)
     if ($Mode -eq 'WhatIf') { Add-RunLog $Action 'simulated' "Would change: $Target"; return $true }
-    if ($PSCmdlet.ShouldProcess($Target, $Action)) { $null = & $Operation; Add-RunLog $Action 'completed' $Target; return $true }
-    Add-RunLog $Action 'skipped' $Target
-    return $false
+    $null = & $Operation
+    Add-RunLog $Action 'completed' $Target
+    return $true
 }
 
 function Get-ParentDn { param([string]$DistinguishedName); return $DistinguishedName -replace '^[A-Z]{2}=(?:\\.|[^,])+,', '' }
@@ -70,7 +72,7 @@ function Find-ReferenceUsers {
 
 Write-Host "IT Lifecycle agent - $operation / $Mode" -ForegroundColor Cyan
 Write-Host "Job: $($job.jobId)"
-Write-Host 'Credentials are requested locally, kept in memory, and are not written to the result file.' -ForegroundColor DarkGray
+Write-Host 'Credentials are loaded from one-time DPAPI files and are not written to the result file.' -ForegroundColor DarkGray
 
 try {
     if ($CredentialPath) {
@@ -80,8 +82,17 @@ try {
             Remove-Item -LiteralPath $CredentialPath -Force -ErrorAction SilentlyContinue
         }
         if ($adCredential -isnot [Management.Automation.PSCredential]) { throw 'The supplied AD credential could not be read.' }
-    } else {
-        $adCredential = Get-Credential -Message 'Enter the delegated AD test account (Domain Admin is not recommended).'
+    } else { throw 'No AD credential was supplied. Interactive prompts are disabled for gateway jobs.' }
+    if ($HelpdeskCredentialPath) {
+        try {
+            $helpdeskCredential = Import-Clixml -LiteralPath $HelpdeskCredentialPath
+        } finally {
+            Remove-Item -LiteralPath $HelpdeskCredentialPath -Force -ErrorAction SilentlyContinue
+        }
+        if ($helpdeskCredential -isnot [Management.Automation.PSCredential]) { throw 'The supplied HelpDesk credential could not be read.' }
+    }
+    if ($Mode -eq 'Execute' -and @($job.actions | Where-Object { $_.type -eq 'CreateHelpdeskTicket' }).Count -and -not $helpdeskCredential) {
+        throw 'No HelpDesk credential was supplied. The run was stopped before any changes were made.'
     }
     Import-Module ActiveDirectory -ErrorAction Stop
     $null = Get-ADDomain -Identity $job.directory.domain -Server $job.directory.domain -Credential $adCredential
@@ -249,14 +260,12 @@ try {
                 }
                 'CreateHelpdeskTicket' {
                     if ($Mode -eq 'WhatIf') { Add-RunLog $actionType 'simulated' $job.helpdesk.subject; Add-Change 'Helpdesk-Ticket erstellen' 'Helpdesk-Ticket' $job.helpdesk.subject "Vorgang fuer $($job.person.displayName)" $null $job.helpdesk.text 'manual' 'simulated'; break }
-                    if (-not $PSCmdlet.ShouldProcess($job.helpdesk.baseUrl, "Create HelpDesk ticket '$($job.helpdesk.subject)'")) { Add-RunLog $actionType 'skipped' $job.helpdesk.subject; break }
-                    $helpdeskCredential = Get-Credential -Message 'Enter the i-net HelpDesk API account.'
                     $plainPassword = $helpdeskCredential.GetNetworkCredential().Password
                     try {
                         $basicBytes = [Text.Encoding]::ASCII.GetBytes("$($helpdeskCredential.UserName):$plainPassword")
                         $headers = @{ Authorization = "Basic $([Convert]::ToBase64String($basicBytes))" }
                         $body = @{ text = $job.helpdesk.text; htmlContent = $false; ticketFields = @{ subject = $job.helpdesk.subject }; actionArguments = @{} } | ConvertTo-Json -Depth 8
-                        $ticket = Invoke-RestMethod -Uri "$($job.helpdesk.baseUrl.TrimEnd('/'))/api/ticket/create" -Method Post -Headers $headers -ContentType 'application/json; charset=utf-8' -Body $body
+                        $ticket = Invoke-RestMethod -Uri "$($job.helpdesk.baseUrl.TrimEnd('/'))/api/ticket/create" -Method Post -Headers $headers -ContentType 'application/json; charset=utf-8' -Body $body -TimeoutSec 60
                         $ticketId = if ($ticket.id) { [string]$ticket.id } elseif ($ticket.ticketId) { [string]$ticket.ticketId } else { $job.helpdesk.subject }
                         Add-RunLog $actionType 'completed' "Ticket: $ticketId"
                         Add-Change 'Helpdesk-Ticket erstellt' 'Helpdesk-Ticket' $ticketId "Vorgang fuer $($job.person.displayName)" $null $job.helpdesk.subject 'manual'
@@ -271,6 +280,10 @@ try {
     $runError = $_.Exception.Message
     Add-RunLog 'Run failed' 'failed' $runError
 } finally {
+    if ($CredentialPath) { Remove-Item -LiteralPath $CredentialPath -Force -ErrorAction SilentlyContinue }
+    if ($HelpdeskCredentialPath) { Remove-Item -LiteralPath $HelpdeskCredentialPath -Force -ErrorAction SilentlyContinue }
+    $adCredential = $null
+    $helpdeskCredential = $null
     $completedAt = Get-Date
     [string[]]$automationTaskIds = @()
     if ($job.PSObject.Properties['automationTaskIds']) {

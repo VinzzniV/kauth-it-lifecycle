@@ -13,7 +13,7 @@ Interne Anwendung für das Einlesen von HR-Laufkarten, die Bearbeitung manueller
 - Automatische AD-Computerplanung nach Standort und Gerätetyp
 - WhatIf, echte Ausführung, Ergebnisprotokoll und gezielter Rollback
 - Docker-Betrieb mit lokaler Datenbank, persistentem Volume und Zugriffsschutz
-- Windows-Agent, der Zugangsdaten ausschließlich lokal abfragt
+- Windows-Agent, der AD- und HelpDesk-Zugangsdaten pro Auftrag entgegennimmt und ohne versteckte Dialoge arbeitet
 
 ## Lokal starten
 
@@ -60,7 +60,6 @@ Das Update lädt ausschließlich freigegebene Änderungen, baut das Docker-Image
 ## Sicherheit
 
 - `.env` enthält Geheimnisse und ist von Git ausgeschlossen.
-- Helpdesk-Kennwörter bleiben in der lokalen Abfrage des Agenten und werden nicht gespeichert.
-- AD-Zugangsdaten werden pro Auftrag übergeben, im Gateway sofort aus der Jobdatei entfernt und nur kurzzeitig DPAPI-geschützt an den Agenten weitergereicht. Für diesen Weg ist HTTPS außerhalb isolierter Tests erforderlich.
+- AD- und HelpDesk-Zugangsdaten werden pro Auftrag übergeben, im Gateway sofort aus der Jobdatei entfernt und nur kurzzeitig DPAPI-geschützt an den Agenten weitergereicht. Für diesen Weg ist HTTPS außerhalb isolierter Tests erforderlich.
 - Für den produktiven Betrieb sollte statt Domain Admin ein delegiertes Konto mit den tatsächlich benötigten Rechten verwendet werden.
 - Helpdesk-Tickets werden protokolliert, aber mangels bestätigter Storno-API nicht automatisch zurückgenommen.

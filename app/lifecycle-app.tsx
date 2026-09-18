@@ -161,12 +161,18 @@ async function collectExecutionResult(
   jobId: string,
   onComplete: () => void,
   onResult?: (result: ImmediateExecutionResult) => void,
+  onProgress?: (message: string) => void,
 ) {
   for (let attempt = 0; attempt < 150; attempt += 1) {
     const response = await fetch(
       `/api/agent?jobId=${encodeURIComponent(jobId)}`,
     );
     if (response.status === 202) {
+      if (attempt > 0 && attempt % 5 === 0) {
+        onProgress?.(
+          `Der Auftrag läuft auf dem Jobserver seit mindestens ${attempt * 2} Sekunden. Ergebnis wird weiter abgerufen …`,
+        );
+      }
       await new Promise((resolve) => window.setTimeout(resolve, 2000));
       continue;
     }
@@ -828,26 +834,47 @@ function AdCredentialDialog({
   setOpen,
   title,
   onSubmit,
+  requireHelpdesk = false,
 }: {
   open: boolean;
   setOpen: (value: boolean) => void;
   title: string;
-  onSubmit: (credential: AdCredential) => void;
+  onSubmit: (
+    credential: AdCredential,
+    helpdeskCredential?: AdCredential,
+  ) => void;
+  requireHelpdesk?: boolean;
 }) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  const [helpdeskUsername, setHelpdeskUsername] = useState("");
+  const [helpdeskPassword, setHelpdeskPassword] = useState("");
   function submit(event: FormEvent) {
     event.preventDefault();
     if (!username.trim() || !password) return;
-    onSubmit({ username: username.trim(), password });
+    if (requireHelpdesk && (!helpdeskUsername.trim() || !helpdeskPassword))
+      return;
+    onSubmit(
+      { username: username.trim(), password },
+      requireHelpdesk
+        ? {
+            username: helpdeskUsername.trim(),
+            password: helpdeskPassword,
+          }
+        : undefined,
+    );
     setPassword("");
+    setHelpdeskPassword("");
     setOpen(false);
   }
   return (
     <Dialog
       open={open}
       onOpenChange={(next) => {
-        if (!next) setPassword("");
+        if (!next) {
+          setPassword("");
+          setHelpdeskPassword("");
+        }
         setOpen(next);
       }}
     >
@@ -877,6 +904,50 @@ function AdCredentialDialog({
                 autoFocus
               />
             </div>
+            {requireHelpdesk && (
+              <div className="space-y-3 rounded-xl border border-[#dce3e7] bg-[#f8fafb] p-4">
+                <div>
+                  <p className="text-sm font-medium">i-net HelpDesk API</p>
+                  <p className="mt-1 text-xs text-[#71808c]">
+                    Wird ausschließlich zum Erstellen des Tickets in diesem Lauf
+                    verwendet.
+                  </p>
+                </div>
+                <div>
+                  <label
+                    className="mb-1.5 block text-sm font-medium"
+                    htmlFor="helpdesk-username"
+                  >
+                    HelpDesk-Benutzername
+                  </label>
+                  <Input
+                    id="helpdesk-username"
+                    autoComplete="off"
+                    value={helpdeskUsername}
+                    onChange={(event) =>
+                      setHelpdeskUsername(event.target.value)
+                    }
+                  />
+                </div>
+                <div>
+                  <label
+                    className="mb-1.5 block text-sm font-medium"
+                    htmlFor="helpdesk-password"
+                  >
+                    HelpDesk-Kennwort
+                  </label>
+                  <Input
+                    id="helpdesk-password"
+                    type="password"
+                    autoComplete="off"
+                    value={helpdeskPassword}
+                    onChange={(event) =>
+                      setHelpdeskPassword(event.target.value)
+                    }
+                  />
+                </div>
+              </div>
+            )}
             <div>
               <label
                 className="mb-1.5 block text-sm font-medium"
@@ -911,7 +982,12 @@ function AdCredentialDialog({
             </Button>
             <Button
               type="submit"
-              disabled={!username.trim() || !password}
+              disabled={
+                !username.trim() ||
+                !password ||
+                (requireHelpdesk &&
+                  (!helpdeskUsername.trim() || !helpdeskPassword))
+              }
               className="bg-[#176b87] text-white hover:bg-[#12566d]"
             >
               Auftrag starten
@@ -989,6 +1065,7 @@ function AutomationsView({
   async function requestRun(
     mode: "WhatIf" | "Execute",
     adCredential: AdCredential,
+    helpdeskCredential?: AdCredential,
   ) {
     if (!job) return;
     if (invalidExistingComputer) {
@@ -1010,7 +1087,12 @@ function AutomationsView({
       const response = await fetch("/api/agent", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ ...job, requestedMode: mode, adCredential }),
+        body: JSON.stringify({
+          ...job,
+          requestedMode: mode,
+          adCredential,
+          ...(helpdeskCredential ? { helpdeskCredential } : {}),
+        }),
       });
       const data = (await response.json()) as ApiMessage;
       if (!response.ok)
@@ -1025,6 +1107,7 @@ function AutomationsView({
             acceptedJobId,
             onRefresh,
             setLatestExecution,
+            setResult,
           ),
         );
       }
@@ -1070,9 +1153,12 @@ function AutomationsView({
     setCredentialAction(action);
     setCredentialOpen(true);
   }
-  function submitCredentials(credential: AdCredential) {
+  function submitCredentials(
+    credential: AdCredential,
+    helpdeskCredential?: AdCredential,
+  ) {
     if (credentialAction === "reference") void checkReference(credential);
-    else void requestRun(credentialAction, credential);
+    else void requestRun(credentialAction, credential, helpdeskCredential);
   }
   function selectEmployee(person: EmployeeRecord) {
     setComputerAssignments({});
@@ -1094,6 +1180,7 @@ function AutomationsView({
               ? "AD-Testlauf starten"
               : "AD-Automation ausführen"
         }
+        requireHelpdesk={credentialAction === "Execute"}
         onSubmit={submitCredentials}
       />
       <Card className="border-[#dce3e7] bg-white p-4">
