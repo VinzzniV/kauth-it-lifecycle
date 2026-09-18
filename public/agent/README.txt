@@ -8,6 +8,7 @@ IT Lifecycle Agent - Pilot
    .\Invoke-ItLifecycleAgent.ps1 -JobPath .\lifecycle-job.json
 5. Real execution after reviewing the result:
    .\Invoke-ItLifecycleAgent.ps1 -JobPath .\lifecycle-job.json -Mode Execute -Confirm
+6. The matching *.result.json contains every actual or simulated change, the affected object, its employee relationship, before/after values and its rollback action.
 
 Security:
 - The portal never receives or stores passwords.
@@ -25,5 +26,7 @@ Direct start from the portal (optional pilot gateway):
 - Run Start-ItLifecycleGateway.ps1 interactively on PK-SRVMGMT002.
 - Connect its localhost listener through a private Sites tunnel as `management_agent`.
 - Configure the same gateway token as the Sites secret MANAGEMENT_AGENT_TOKEN.
-- The gateway accepts only WhatIf jobs and opens the local credential prompt on PK-SRVMGMT002.
+- The gateway accepts WhatIf, Execute and rollback jobs and opens the local credential prompt on PK-SRVMGMT002.
+- The portal polls the authenticated /results endpoint and stores the returned result in the employee record.
+- Rollback reverses only changes recorded by that exact execution. Helpdesk tickets without a confirmed cancellation API remain documented as manual follow-up.
 - Never publish port 8788 directly to the internet.

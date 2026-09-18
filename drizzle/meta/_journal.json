@@ -15,6 +15,13 @@
       "when": 1789714536670,
       "tag": "0001_known_silver_sable",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1789718218200,
+      "tag": "0002_windy_warstar",
+      "breakpoints": true
     }
   ]
 }

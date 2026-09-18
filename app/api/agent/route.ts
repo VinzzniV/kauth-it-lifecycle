@@ -1,9 +1,9 @@
-import { env } from "cloudflare:workers";
 import { z } from "zod";
+import { forwardToManagementAgent, readManagementAgentResult } from "../../../lib/management-agent";
 
 const jobSchema = z.object({
-  schemaVersion: z.literal(1), jobId: z.string().min(1), requestedMode: z.literal("WhatIf"), lifecycleType: z.enum(["onboarding", "change", "offboarding"]),
-  person: z.object({ displayName: z.string(), personnelNumber: z.string() }).passthrough(),
+  schemaVersion: z.literal(1), operation: z.literal("execute"), jobId: z.string().min(1), requestedMode: z.enum(["WhatIf", "Execute"]), lifecycleType: z.enum(["onboarding", "change", "offboarding"]),
+  person: z.object({ employeeId: z.string(), displayName: z.string(), personnelNumber: z.string() }).passthrough(),
   directory: z.object({ domain: z.literal("kauth.local"), samAccountName: z.string(), targetOu: z.string() }).passthrough(),
   helpdesk: z.object({ baseUrl: z.string(), subject: z.string(), text: z.string() }),
   actions: z.array(z.object({ type: z.string(), target: z.string(), requiresApproval: z.literal(true) })),
@@ -12,16 +12,18 @@ const jobSchema = z.object({
 export async function POST(request: Request) {
   try {
     const job = jobSchema.parse(await request.json());
-    const runtime = env as unknown as Record<string, string | undefined>;
-    const gatewayUrl = runtime.MANAGEMENT_AGENT_URL;
-    const tunnel = (env as unknown as { CUSTOMER_HTTP_MANAGEMENT_AGENT?: { fetch: (request: Request) => Promise<Response> } }).CUSTOMER_HTTP_MANAGEMENT_AGENT;
-    if (!gatewayUrl && !tunnel) return Response.json({ error: "Der Management-Agent ist noch nicht mit der Website verbunden. Auftrag und Agent können weiterhin heruntergeladen und lokal im WhatIf-Modus ausgeführt werden." }, { status: 503 });
-    const headers: Record<string, string> = { "content-type": "application/json" };
-    if (runtime.MANAGEMENT_AGENT_TOKEN) headers.authorization = `Bearer ${runtime.MANAGEMENT_AGENT_TOKEN}`;
-    const target = gatewayUrl ? `${gatewayUrl.replace(/\/$/, "")}/jobs` : "http://management-agent/jobs";
-    const outgoing = new Request(target, { method: "POST", headers, body: JSON.stringify(job) });
-    const response = tunnel ? await tunnel.fetch(outgoing) : await fetch(outgoing);
-    if (!response.ok) return Response.json({ error: `Der Management-Agent hat den Auftrag abgelehnt (${response.status}).` }, { status: 502 });
+    await forwardToManagementAgent(job);
     return Response.json({ ok: true, jobId: job.jobId });
-  } catch (error) { return Response.json({ error: error instanceof Error ? error.message : "Der Auftrag ist ungültig." }, { status: 400 }); }
+  } catch (error) { const message = error instanceof Error ? error.message : "Der Auftrag ist ungültig."; return Response.json({ error: message }, { status: message.includes("Management-Agent") ? 503 : 400 }); }
+}
+
+export async function GET(request: Request) {
+  try {
+    const jobId = new URL(request.url).searchParams.get("jobId");
+    if (!jobId || !/^[a-zA-Z0-9._-]+$/.test(jobId)) return Response.json({ error: "Ungültige Auftragsnummer." }, { status: 400 });
+    const response = await readManagementAgentResult(jobId);
+    if (response.status === 202 || response.status === 404) return Response.json({ status: "running" }, { status: 202 });
+    if (!response.ok) return Response.json({ error: `Ergebnis konnte nicht gelesen werden (${response.status}).` }, { status: 502 });
+    return Response.json(await response.json());
+  } catch (error) { const message = error instanceof Error ? error.message : "Ergebnis konnte nicht gelesen werden."; return Response.json({ error: message }, { status: message.includes("Management-Agent") ? 503 : 400 }); }
 }

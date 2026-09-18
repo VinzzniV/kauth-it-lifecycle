@@ -1,7 +1,7 @@
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray, ne } from "drizzle-orm";
 import { z } from "zod";
 import { getDb } from "../../../db";
-import { auditEntries, employees, lifecycleEvents, services, workflowTasks } from "../../../db/schema";
+import { auditEntries, automationChanges, automationRuns, employees, lifecycleEvents, services, workflowTasks } from "../../../db/schema";
 
 const serviceSchema = z.object({ id: z.string(), key: z.string(), label: z.string(), category: z.string(), status: z.string(), source: z.string(), details: z.string().optional() });
 const taskSchema = z.object({ id: z.string(), eventType: z.string(), title: z.string(), owner: z.string(), executionType: z.string(), status: z.string(), dueDate: z.string().nullable().optional(), completedAt: z.string().nullable().optional() });
@@ -22,16 +22,20 @@ export async function GET() {
     const people = await db.select().from(employees).orderBy(desc(employees.updatedAt));
     if (!people.length) return Response.json({ employees: [] });
     const ids = people.map((person) => person.id);
-    const [allServices, allTasks, allEvents] = await Promise.all([
+    const [allServices, allTasks, allEvents, allRuns] = await Promise.all([
       db.select().from(services).where(inArray(services.employeeId, ids)),
       db.select().from(workflowTasks).where(inArray(workflowTasks.employeeId, ids)),
       db.select().from(lifecycleEvents).where(inArray(lifecycleEvents.employeeId, ids)).orderBy(desc(lifecycleEvents.importedAt)),
+      db.select().from(automationRuns).where(inArray(automationRuns.employeeId, ids)).orderBy(desc(automationRuns.startedAt)),
     ]);
+    const runIds = allRuns.map((run) => run.id);
+    const allChanges = runIds.length ? await db.select().from(automationChanges).where(inArray(automationChanges.runId, runIds)) : [];
     return Response.json({ employees: people.map((person) => ({
       ...person,
       services: allServices.filter((item) => item.employeeId === person.id).map(({ employeeId: _, ...item }) => item),
       tasks: allTasks.filter((item) => item.employeeId === person.id).map(({ employeeId: _, ...item }) => item),
       events: allEvents.filter((item) => item.employeeId === person.id).map(({ employeeId: _, ...item }) => item),
+      automationRuns: allRuns.filter((item) => item.employeeId === person.id).map(({ employeeId: _, ...run }) => ({ ...run, changes: allChanges.filter((change) => change.runId === run.id).map(({ runId: __, ...change }) => change) })),
     })) });
   } catch (error) {
     return Response.json({ error: errorMessage(error) }, { status: 503 });
@@ -72,6 +76,13 @@ export async function PATCH(request: Request) {
     const payload = z.object({ employeeId: z.string(), taskId: z.string(), status: z.enum(["open", "ready", "done"]) }).parse(await request.json());
     const db = getDb();
     await db.update(workflowTasks).set({ status: payload.status, completedAt: payload.status === "done" ? new Date().toISOString() : null }).where(and(eq(workflowTasks.id, payload.taskId), eq(workflowTasks.employeeId, payload.employeeId)));
+    const remaining = await db.select({ id: workflowTasks.id }).from(workflowTasks).where(and(eq(workflowTasks.employeeId, payload.employeeId), ne(workflowTasks.status, "done"))).limit(1);
+    if (!remaining.length) {
+      await db.update(employees).set({ status: "completed", updatedAt: new Date().toISOString() }).where(eq(employees.id, payload.employeeId));
+    } else {
+      const [latestEvent] = await db.select({ type: lifecycleEvents.type }).from(lifecycleEvents).where(eq(lifecycleEvents.employeeId, payload.employeeId)).orderBy(desc(lifecycleEvents.importedAt)).limit(1);
+      await db.update(employees).set({ status: latestEvent?.type === "offboarding" ? "leaving" : "pending", updatedAt: new Date().toISOString() }).where(and(eq(employees.id, payload.employeeId), eq(employees.status, "completed")));
+    }
     await db.insert(auditEntries).values({ employeeId: payload.employeeId, action: "Aufgabe aktualisiert", detail: `${payload.taskId}: ${payload.status}` });
     return Response.json({ ok: true });
   } catch (error) {
@@ -85,6 +96,8 @@ export async function DELETE(request: Request) {
     const db = getDb();
     await db.batch([
       db.delete(auditEntries).where(eq(auditEntries.employeeId, employeeId)),
+      db.delete(automationChanges).where(inArray(automationChanges.runId, db.select({ id: automationRuns.id }).from(automationRuns).where(eq(automationRuns.employeeId, employeeId)))),
+      db.delete(automationRuns).where(eq(automationRuns.employeeId, employeeId)),
       db.delete(workflowTasks).where(eq(workflowTasks.employeeId, employeeId)),
       db.delete(services).where(eq(services.employeeId, employeeId)),
       db.delete(lifecycleEvents).where(eq(lifecycleEvents.employeeId, employeeId)),

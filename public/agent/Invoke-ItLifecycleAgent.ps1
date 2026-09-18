@@ -3,181 +3,220 @@ param(
     [Parameter(Mandatory = $true)]
     [ValidateScript({ Test-Path -LiteralPath $_ -PathType Leaf })]
     [string]$JobPath,
-
-    [ValidateSet('WhatIf', 'Execute')]
-    [string]$Mode = 'WhatIf'
+    [ValidateSet('Job', 'WhatIf', 'Execute')]
+    [string]$Mode = 'Job'
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+$resolvedJobPath = (Resolve-Path -LiteralPath $JobPath).Path
+$job = Get-Content -LiteralPath $resolvedJobPath -Raw -Encoding UTF8 | ConvertFrom-Json
+if ($job.schemaVersion -ne 1) { throw 'Unsupported job schema. Expected schemaVersion 1.' }
+if ($Mode -eq 'Job') { $Mode = if ($job.requestedMode -eq 'Execute') { 'Execute' } else { 'WhatIf' } }
+$operation = if ($job.PSObject.Properties['operation']) { [string]$job.operation } else { 'execute' }
+if ($operation -notin @('execute', 'rollback')) { throw "Unsupported operation: $operation" }
+if ($job.directory.domain -ne 'kauth.local') { throw 'This pilot accepts only the kauth.local domain.' }
+
+$script:RunLog = [System.Collections.Generic.List[object]]::new()
+$script:Changes = [System.Collections.Generic.List[object]]::new()
+$startedAt = Get-Date
+$runId = if ($job.PSObject.Properties['runId']) { [string]$job.runId } else { [string]$job.jobId }
+$runStatus = 'completed'
+$runError = ''
 
 function Add-RunLog {
     param([string]$Action, [string]$State, [string]$Message)
-    $script:RunLog.Add([pscustomobject]@{
-        time = (Get-Date).ToString('o')
-        action = $Action
-        state = $State
-        message = $Message
+    $script:RunLog.Add([pscustomobject]@{ time = (Get-Date).ToString('o'); action = $Action; state = $State; message = $Message })
+}
+
+function Add-Change {
+    param([string]$Action, [string]$ResourceType, [string]$ResourceId, [string]$Relation, $BeforeValue, $AfterValue, [string]$RollbackAction, [string]$State = 'completed')
+    $script:Changes.Add([pscustomobject]@{
+        id = "change-$([guid]::NewGuid().ToString('N'))"; action = $Action; resourceType = $ResourceType; resourceId = $ResourceId
+        relation = $Relation; beforeValue = $BeforeValue; afterValue = $AfterValue; rollbackAction = $RollbackAction; status = $State
     })
 }
 
 function Invoke-ApprovedAction {
     param([string]$Action, [string]$Target, [scriptblock]$Operation)
-    if ($Mode -eq 'WhatIf') {
-        Add-RunLog $Action 'simulated' "Would change: $Target"
-        return
-    }
-    if ($PSCmdlet.ShouldProcess($Target, $Action)) {
-        & $Operation
-        Add-RunLog $Action 'completed' $Target
-    } else {
-        Add-RunLog $Action 'skipped' $Target
-    }
+    if ($Mode -eq 'WhatIf') { Add-RunLog $Action 'simulated' "Would change: $Target"; return $false }
+    if ($PSCmdlet.ShouldProcess($Target, $Action)) { $null = & $Operation; Add-RunLog $Action 'completed' $Target; return $true }
+    Add-RunLog $Action 'skipped' $Target
+    return $false
 }
 
-$resolvedJobPath = (Resolve-Path -LiteralPath $JobPath).Path
-$job = Get-Content -LiteralPath $resolvedJobPath -Raw -Encoding UTF8 | ConvertFrom-Json
-if ($job.schemaVersion -ne 1) { throw 'Unsupported job schema. Expected schemaVersion 1.' }
-if ($job.directory.domain -ne 'kauth.local') { throw 'This pilot accepts only the kauth.local domain.' }
-if ($job.directory.samAccountName -notmatch '^[a-z0-9.-]+$') { throw 'Invalid sAMAccountName in job.' }
-if ($Mode -eq 'Execute' -and $job.lifecycleType -ne 'offboarding' -and $job.directory.targetOu -eq 'REVIEW_REQUIRED') {
-    throw 'Select and approve a target OU in the job before running the agent.'
-}
-if ($Mode -eq 'Execute' -and @($job.directory.computers | Where-Object { $_.prefix -eq 'REVIEW_REQUIRED' -or $_.targetOu -eq 'REVIEW_REQUIRED' }).Count) {
-    throw 'Select and approve the location and computer OU before running the agent.'
-}
+function Get-ParentDn { param([string]$DistinguishedName); return $DistinguishedName -replace '^[A-Z]{2}=(?:\\.|[^,])+,', '' }
+function Read-StoredValue { param($Value); if ($null -eq $Value -or $Value -eq '') { return $null }; try { return ($Value | ConvertFrom-Json) } catch { return $Value } }
 
-$script:RunLog = [System.Collections.Generic.List[object]]::new()
-$startedAt = Get-Date
-Write-Host "IT Lifecycle agent - $Mode" -ForegroundColor Cyan
-Write-Host "Job: $($job.jobId) | User: $($job.directory.samAccountName)"
+Write-Host "IT Lifecycle agent - $operation / $Mode" -ForegroundColor Cyan
+Write-Host "Job: $($job.jobId)"
 Write-Host 'Credentials are requested locally, kept in memory, and are not written to the result file.' -ForegroundColor DarkGray
 
-Import-Module ActiveDirectory -ErrorAction Stop
-$adCredential = Get-Credential -Message 'Enter the delegated AD test account (Domain Admin is not recommended).'
-$null = Get-ADDomain -Identity $job.directory.domain -Server $job.directory.domain -Credential $adCredential
-Add-RunLog 'ValidateAdConnection' 'completed' $job.directory.domain
+try {
+    Import-Module ActiveDirectory -ErrorAction Stop
+    $adCredential = Get-Credential -Message 'Enter the delegated AD test account (Domain Admin is not recommended).'
+    $null = Get-ADDomain -Identity $job.directory.domain -Server $job.directory.domain -Credential $adCredential
+    $adArgs = @{ Server = $job.directory.domain; Credential = $adCredential; ErrorAction = 'Stop' }
+    Add-RunLog 'ValidateAdConnection' 'completed' $job.directory.domain
 
-$adArgs = @{ Server = $job.directory.domain; Credential = $adCredential; ErrorAction = 'Stop' }
-$existingUser = Get-ADUser -Filter "SamAccountName -eq '$($job.directory.samAccountName)'" @adArgs -Properties MemberOf,Mail,Enabled,DistinguishedName
-$referenceUser = $null
-$resolvedTargetOu = [string]$job.directory.targetOu
-if ($job.directory.referenceUser) {
-    $surname = ([string]$job.directory.referenceUser.surname).Replace("'", "''")
-    $initial = ([string]$job.directory.referenceUser.givenNameInitial).Replace("'", "''")
-    $referenceUsers = @(Get-ADUser -Filter "Surname -eq '$surname' -and GivenName -like '$initial*'" @adArgs -Properties MemberOf,DistinguishedName)
-    if ($referenceUsers.Count -ne 1) { throw "Reference user '$($job.directory.referenceUser.displayName)' is not unique. Found: $($referenceUsers.Count)." }
-    $referenceUser = $referenceUsers[0]
-    if ($resolvedTargetOu -eq 'REFERENCE_USER_OU') {
-        $resolvedTargetOu = $referenceUser.DistinguishedName -replace '^CN=(?:\\.|[^,])+,', ''
+    if ($operation -eq 'rollback') {
+        $rollbackChanges = @($job.originalRun.changes)
+        [array]::Reverse($rollbackChanges)
+        foreach ($change in $rollbackChanges) {
+            $rollbackAction = [string]$change.rollbackAction
+            $resourceId = [string]$change.resourceId
+            switch ($rollbackAction) {
+                'Remove-ADUser' {
+                    if (Invoke-ApprovedAction $rollbackAction $resourceId { Remove-ADUser -Identity $resourceId -Confirm:$false @adArgs }) { Add-Change $rollbackAction 'AD-Benutzer' $resourceId 'Benutzerkonto der Mitarbeiterakte' $change.afterValue $null 'manual' }
+                }
+                'Remove-ADComputer' {
+                    if (Invoke-ApprovedAction $rollbackAction $resourceId { Remove-ADComputer -Identity $resourceId -Confirm:$false @adArgs }) { Add-Change $rollbackAction 'AD-Computer' $resourceId 'Gerät der Mitarbeiterakte' $change.afterValue $null 'manual' }
+                }
+                'Remove-ADGroupMember' {
+                    if (Invoke-ApprovedAction $rollbackAction $resourceId { Remove-ADGroupMember -Identity $resourceId -Members $job.directory.samAccountName -Confirm:$false @adArgs }) { Add-Change $rollbackAction 'AD-Gruppe' $resourceId "Mitglied: $($job.directory.samAccountName)" $true $false 'Add-ADGroupMember' }
+                }
+                'Add-ADGroupMember' {
+                    if (Invoke-ApprovedAction $rollbackAction $resourceId { Add-ADGroupMember -Identity $resourceId -Members $job.directory.samAccountName @adArgs }) { Add-Change $rollbackAction 'AD-Gruppe' $resourceId "Mitglied: $($job.directory.samAccountName)" $false $true 'Remove-ADGroupMember' }
+                }
+                'Enable-ADAccount' {
+                    if (Invoke-ApprovedAction $rollbackAction $resourceId { Enable-ADAccount -Identity $resourceId @adArgs }) { Add-Change $rollbackAction 'AD-Benutzer' $resourceId 'Kontostatus' $false $true 'Disable-ADAccount' }
+                }
+                'Move-ADObject' {
+                    $originalOu = [string](Read-StoredValue $change.beforeValue)
+                    if (-not $originalOu) { throw "Original OU missing for $resourceId" }
+                    if (Invoke-ApprovedAction $rollbackAction $resourceId { Move-ADObject -Identity $resourceId -TargetPath $originalOu @adArgs }) { Add-Change $rollbackAction 'AD-Benutzer' $resourceId 'Organisationseinheit' $change.afterValue $originalOu 'Move-ADObject' }
+                }
+                default { Add-RunLog 'Rollback manual' 'skipped' "$($change.action): $resourceId" }
+            }
+        }
+    } else {
+        if ($job.directory.samAccountName -notmatch '^[a-z0-9.-]+$') { throw 'Invalid sAMAccountName in job.' }
+        if ($Mode -eq 'Execute' -and $job.lifecycleType -ne 'offboarding' -and $job.directory.targetOu -eq 'REVIEW_REQUIRED') { throw 'Select and approve a target OU in the job before running the agent.' }
+        if ($Mode -eq 'Execute' -and @($job.directory.computers | Where-Object { $_.prefix -eq 'REVIEW_REQUIRED' -or $_.targetOu -eq 'REVIEW_REQUIRED' }).Count) { throw 'Select and approve the location and computer OU before running the agent.' }
+
+        $existingUser = Get-ADUser -Filter "SamAccountName -eq '$($job.directory.samAccountName)'" @adArgs -Properties MemberOf,Mail,Enabled,DistinguishedName
+        $assignedGroups = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+        if ($existingUser) { foreach ($groupDn in @($existingUser.MemberOf)) { $null = $assignedGroups.Add([string]$groupDn) } }
+        $referenceUser = $null
+        $resolvedTargetOu = [string]$job.directory.targetOu
+        if ($job.directory.referenceUser) {
+            $surname = ([string]$job.directory.referenceUser.surname).Replace("'", "''")
+            $initial = ([string]$job.directory.referenceUser.givenNameInitial).Replace("'", "''")
+            $referenceUsers = @(Get-ADUser -Filter "Surname -eq '$surname' -and GivenName -like '$initial*'" @adArgs -Properties MemberOf,DistinguishedName,SamAccountName)
+            if ($referenceUsers.Count -ne 1) { throw "Reference user '$($job.directory.referenceUser.displayName)' is not unique. Found: $($referenceUsers.Count)." }
+            $referenceUser = $referenceUsers[0]
+            if ($resolvedTargetOu -eq 'REFERENCE_USER_OU') { $resolvedTargetOu = Get-ParentDn $referenceUser.DistinguishedName }
+        }
+
+        foreach ($action in $job.actions) {
+            $actionType = [string]$action.type
+            switch -Wildcard ($actionType) {
+                'CreateAdUser' {
+                    if ($existingUser) { Add-RunLog $actionType 'skipped' 'Account already exists.'; break }
+                    $newUserArgs = @{
+                        Name = $job.person.displayName; GivenName = $job.person.firstName; Surname = $job.person.lastName; DisplayName = $job.person.displayName
+                        SamAccountName = $job.directory.samAccountName; UserPrincipalName = $job.directory.userPrincipalName; EmailAddress = $job.directory.mail
+                        EmployeeNumber = $job.person.personnelNumber; Department = $job.person.department; Description = $job.directory.description
+                        Title = $job.directory.title; Company = $job.person.company; Path = $resolvedTargetOu; Enabled = $false
+                    }
+                    $changed = Invoke-ApprovedAction 'Create disabled AD user' $job.directory.userPrincipalName { New-ADUser @newUserArgs @adArgs }
+                    if ($Mode -eq 'Execute' -and $changed) {
+                        $existingUser = Get-ADUser -Identity $job.directory.samAccountName @adArgs -Properties MemberOf,Mail,Enabled,DistinguishedName
+                        Add-Change 'Benutzer angelegt' 'AD-Benutzer' $existingUser.SamAccountName 'Primäres Konto der Mitarbeiterakte' $null $existingUser.DistinguishedName 'Remove-ADUser'
+                    } elseif ($Mode -eq 'WhatIf') { Add-Change 'Benutzer anlegen' 'AD-Benutzer' $job.directory.samAccountName 'Primäres Konto der Mitarbeiterakte' $null $resolvedTargetOu 'manual' 'simulated' }
+                }
+                'CopyGroupsFromReference' {
+                    if (-not $referenceUser) { throw 'Reference user action exists without a unique reference user.' }
+                    foreach ($groupDn in @($referenceUser.MemberOf)) {
+                        $alreadyMember = $assignedGroups.Contains([string]$groupDn)
+                        if ($alreadyMember) { Add-RunLog 'Copy reference group membership' 'skipped' "$groupDn already assigned"; continue }
+                        if (Invoke-ApprovedAction 'Copy reference group membership' $groupDn { Add-ADGroupMember -Identity $groupDn -Members $job.directory.samAccountName @adArgs }) { $null = $assignedGroups.Add([string]$groupDn); Add-Change 'Gruppenmitgliedschaft kopiert' 'AD-Gruppe' $groupDn "Referenz: $($referenceUser.SamAccountName) → Mitglied: $($job.directory.samAccountName)" $false $true 'Remove-ADGroupMember' }
+                    }
+                }
+                'AddGroup:*' {
+                    $groupName = $actionType.Substring(9)
+                    $group = Get-ADGroup -Identity $groupName @adArgs
+                    $alreadyMember = $assignedGroups.Contains([string]$group.DistinguishedName)
+                    if ($alreadyMember) { Add-RunLog 'Add AD group membership' 'skipped' "$groupName already assigned"; break }
+                    if (Invoke-ApprovedAction 'Add AD group membership' $groupName { Add-ADGroupMember -Identity $groupName -Members $job.directory.samAccountName @adArgs }) { $null = $assignedGroups.Add([string]$group.DistinguishedName); Add-Change 'Gruppenmitgliedschaft hinzugefügt' 'AD-Gruppe' $group.DistinguishedName "Mitglied: $($job.directory.samAccountName)" $false $true 'Remove-ADGroupMember' }
+                }
+                'SnapshotAdAccount' {
+                    if (-not $existingUser) { throw "AD account $($job.directory.samAccountName) was not found." }
+                    Add-RunLog $actionType 'completed' "Enabled=$($existingUser.Enabled); Groups=$($existingUser.MemberOf.Count); DN=$($existingUser.DistinguishedName)"
+                }
+                'DisableAdUser' {
+                    if (-not $existingUser) { throw "AD account $($job.directory.samAccountName) was not found." }
+                    if ([bool]$existingUser.Enabled -and (Invoke-ApprovedAction 'Disable AD account' $job.directory.samAccountName { Disable-ADAccount -Identity $existingUser @adArgs })) { Add-Change 'Benutzer deaktiviert' 'AD-Benutzer' $existingUser.SamAccountName 'Kontostatus' $true $false 'Enable-ADAccount' }
+                }
+                'RemoveGroupMemberships' {
+                    if (-not $existingUser) { throw "AD account $($job.directory.samAccountName) was not found." }
+                    foreach ($groupDn in @($existingUser.MemberOf)) {
+                        if (Invoke-ApprovedAction 'Remove AD group membership' $groupDn { Remove-ADGroupMember -Identity $groupDn -Members $existingUser -Confirm:$false @adArgs }) { Add-Change 'Gruppenmitgliedschaft entfernt' 'AD-Gruppe' $groupDn "Mitglied: $($job.directory.samAccountName)" $true $false 'Add-ADGroupMember' }
+                    }
+                }
+                'MoveAdUser' {
+                    if (-not $existingUser) { throw "AD account $($job.directory.samAccountName) was not found." }
+                    $disabledOu = [string]$job.directory.disabledOu
+                    $null = Get-ADOrganizationalUnit -Identity $disabledOu @adArgs
+                    $originalOu = Get-ParentDn $existingUser.DistinguishedName
+                    if (Invoke-ApprovedAction 'Move AD account' $disabledOu { Move-ADObject -Identity $existingUser.DistinguishedName -TargetPath $disabledOu @adArgs }) { Add-Change 'Benutzer verschoben' 'AD-Benutzer' $existingUser.SamAccountName 'Organisationseinheit' $originalOu $disabledOu 'Move-ADObject' }
+                }
+                'CreateAdComputer:*' {
+                    $computerType = $actionType.Substring(17)
+                    $computerPlan = @($job.directory.computers | Where-Object { $_.type -eq $computerType }) | Select-Object -First 1
+                    if (-not $computerPlan) { throw "Computer plan '$computerType' was not found." }
+                    $prefix = [string]$computerPlan.prefix
+                    if ($prefix -notmatch '^[A-Z]{2}-CL(NB|WS)$') { throw "Invalid computer prefix: $prefix" }
+                    $targetOu = [string]$computerPlan.targetOu
+                    $null = Get-ADOrganizationalUnit -Identity $targetOu @adArgs
+                    $numbers = Get-ADComputer -Filter "Name -like '$prefix*'" @adArgs | ForEach-Object { if ($_.Name -match ('^' + [regex]::Escape($prefix) + '(\d+)$')) { [int]$Matches[1] } }
+                    $nextNumber = if ($numbers) { ($numbers | Measure-Object -Maximum).Maximum + 1 } else { 1 }
+                    do { $computerName = $prefix + $nextNumber.ToString('000'); $computerExists = Get-ADComputer -Filter "Name -eq '$computerName'" @adArgs; if ($computerExists) { $nextNumber++ } } while ($computerExists)
+                    $managedBy = if ($existingUser) { $existingUser.DistinguishedName } else { $job.directory.samAccountName }
+                    $computerArgs = @{ Name = $computerName; SamAccountName = "$computerName`$"; Path = $targetOu; Description = $computerPlan.description; ManagedBy = $managedBy; Enabled = $true }
+                    if (Invoke-ApprovedAction "Create AD computer ($computerType)" $computerName { New-ADComputer @computerArgs @adArgs }) { Add-Change "$computerType angelegt" 'AD-Computer' $computerName "Gerät von $($job.person.displayName); verwaltet durch $($job.directory.samAccountName)" $null @{ ou = $targetOu; description = $computerPlan.description; managedBy = $managedBy } 'Remove-ADComputer' }
+                }
+                'CreateHelpdeskTicket' {
+                    if ($Mode -eq 'WhatIf') { Add-RunLog $actionType 'simulated' $job.helpdesk.subject; Add-Change 'Helpdesk-Ticket erstellen' 'Helpdesk-Ticket' $job.helpdesk.subject "Vorgang für $($job.person.displayName)" $null $job.helpdesk.text 'manual' 'simulated'; break }
+                    if (-not $PSCmdlet.ShouldProcess($job.helpdesk.baseUrl, "Create HelpDesk ticket '$($job.helpdesk.subject)'")) { Add-RunLog $actionType 'skipped' $job.helpdesk.subject; break }
+                    $helpdeskCredential = Get-Credential -Message 'Enter the i-net HelpDesk API account.'
+                    $plainPassword = $helpdeskCredential.GetNetworkCredential().Password
+                    try {
+                        $basicBytes = [Text.Encoding]::ASCII.GetBytes("$($helpdeskCredential.UserName):$plainPassword")
+                        $headers = @{ Authorization = "Basic $([Convert]::ToBase64String($basicBytes))" }
+                        $body = @{ text = $job.helpdesk.text; htmlContent = $false; ticketFields = @{ subject = $job.helpdesk.subject }; actionArguments = @{} } | ConvertTo-Json -Depth 8
+                        $ticket = Invoke-RestMethod -Uri "$($job.helpdesk.baseUrl.TrimEnd('/'))/api/ticket/create" -Method Post -Headers $headers -ContentType 'application/json; charset=utf-8' -Body $body
+                        $ticketId = if ($ticket.id) { [string]$ticket.id } elseif ($ticket.ticketId) { [string]$ticket.ticketId } else { $job.helpdesk.subject }
+                        Add-RunLog $actionType 'completed' "Ticket: $ticketId"
+                        Add-Change 'Helpdesk-Ticket erstellt' 'Helpdesk-Ticket' $ticketId "Vorgang für $($job.person.displayName)" $null $job.helpdesk.subject 'manual'
+                    } finally { $plainPassword = $null; $basicBytes = $null; $headers = $null }
+                }
+                default { Add-RunLog $actionType 'skipped' 'Unknown action type.' }
+            }
+        }
     }
+} catch {
+    $runStatus = if ($script:Changes.Count) { 'partial' } else { 'failed' }
+    $runError = $_.Exception.Message
+    Add-RunLog 'Run failed' 'failed' $runError
+} finally {
+    $completedAt = Get-Date
+    $result = [pscustomobject]@{
+        schemaVersion = 1; runId = $runId; jobId = [string]$job.jobId; employeeId = [string]$job.person.employeeId
+        operation = $operation; mode = $Mode; status = $runStatus; relatedRunId = if ($operation -eq 'rollback') { [string]$job.originalRun.id } else { $null }
+        startedAt = $startedAt.ToString('o'); completedAt = $completedAt.ToString('o'); error = $runError
+        automationTaskIds = if ($job.PSObject.Properties['automationTaskIds']) { @($job.automationTaskIds) } else { @() }; changes = $script:Changes; log = $script:RunLog
+        computerName = $env:COMPUTERNAME; operator = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+    }
+    $resultPath = [IO.Path]::ChangeExtension($resolvedJobPath, '.result.json')
+    $resultJson = $result | ConvertTo-Json -Depth 12
+    $resultJson | Set-Content -LiteralPath $resultPath -Encoding UTF8
+    if ($job.PSObject.Properties['callbackUrl'] -and $job.callbackUrl) {
+        $callbackHeaders = @{ 'content-type' = 'application/json' }
+        if ($job.PSObject.Properties['callbackToken'] -and $job.callbackToken) { $callbackHeaders.authorization = "Bearer $($job.callbackToken)" }
+        try { Invoke-RestMethod -Uri $job.callbackUrl -Method Post -Headers $callbackHeaders -Body $resultJson | Out-Null } catch { Write-Warning "Result callback failed: $($_.Exception.Message)" }
+    }
+    Write-Host "Finished with status $runStatus. Result: $resultPath" -ForegroundColor $(if ($runStatus -eq 'completed') { 'Green' } else { 'Yellow' })
 }
 
-foreach ($action in $job.actions) {
-    $actionType = [string]$action.type
-    switch -Wildcard ($actionType) {
-        'CreateAdUser' {
-            if ($existingUser) { Add-RunLog $actionType 'skipped' 'Account already exists.'; break }
-            $newUserArgs = @{
-                Name = $job.person.displayName
-                GivenName = $job.person.firstName
-                Surname = $job.person.lastName
-                DisplayName = $job.person.displayName
-                SamAccountName = $job.directory.samAccountName
-                UserPrincipalName = $job.directory.userPrincipalName
-                EmailAddress = $job.directory.mail
-                EmployeeNumber = $job.person.personnelNumber
-                Department = $job.person.department
-                Description = $job.directory.description
-                Title = $job.directory.title
-                Company = $job.person.company
-                Path = $resolvedTargetOu
-                Enabled = $false
-            }
-            Invoke-ApprovedAction 'Create disabled AD user' $job.directory.userPrincipalName { New-ADUser @newUserArgs @adArgs }
-            if ($Mode -eq 'Execute') { $existingUser = Get-ADUser -Identity $job.directory.samAccountName @adArgs -Properties MemberOf,Mail,Enabled,DistinguishedName }
-        }
-        'CopyGroupsFromReference' {
-            if (-not $referenceUser) { throw 'Reference user action exists without a unique reference user.' }
-            foreach ($groupDn in @($referenceUser.MemberOf)) {
-                Invoke-ApprovedAction 'Copy reference group membership' $groupDn { Add-ADGroupMember -Identity $groupDn -Members $job.directory.samAccountName @adArgs }
-            }
-        }
-        'AddGroup:*' {
-            $groupName = $actionType.Substring(9)
-            $null = Get-ADGroup -Identity $groupName @adArgs
-            Invoke-ApprovedAction 'Add AD group membership' $groupName { Add-ADGroupMember -Identity $groupName -Members $job.directory.samAccountName @adArgs }
-        }
-        'SnapshotAdAccount' {
-            if (-not $existingUser) { throw "AD account $($job.directory.samAccountName) was not found." }
-            Add-RunLog $actionType 'completed' "Enabled=$($existingUser.Enabled); Groups=$($existingUser.MemberOf.Count); DN=$($existingUser.DistinguishedName)"
-        }
-        'DisableAdUser' {
-            if (-not $existingUser) { throw "AD account $($job.directory.samAccountName) was not found." }
-            Invoke-ApprovedAction 'Disable AD account' $job.directory.samAccountName { Disable-ADAccount -Identity $existingUser @adArgs }
-        }
-        'RemoveGroupMemberships' {
-            if (-not $existingUser) { throw "AD account $($job.directory.samAccountName) was not found." }
-            foreach ($groupDn in @($existingUser.MemberOf)) {
-                Invoke-ApprovedAction 'Remove AD group membership' $groupDn { Remove-ADGroupMember -Identity $groupDn -Members $existingUser -Confirm:$false @adArgs }
-            }
-        }
-        'MoveAdUser' {
-            if (-not $existingUser) { throw "AD account $($job.directory.samAccountName) was not found." }
-            $disabledOu = [string]$job.directory.disabledOu
-            $null = Get-ADOrganizationalUnit -Identity $disabledOu @adArgs
-            Invoke-ApprovedAction 'Move AD account' $disabledOu { Move-ADObject -Identity $existingUser.DistinguishedName -TargetPath $disabledOu @adArgs }
-        }
-        'CreateAdComputer:*' {
-            $computerType = $actionType.Substring(17)
-            $computerPlan = @($job.directory.computers | Where-Object { $_.type -eq $computerType }) | Select-Object -First 1
-            if (-not $computerPlan) { throw "Computer plan '$computerType' was not found." }
-            $prefix = [string]$computerPlan.prefix
-            if ($prefix -notmatch '^[A-Z]{2}-CL(NB|WS)$') { throw "Invalid computer prefix: $prefix" }
-            $targetOu = [string]$computerPlan.targetOu
-            $null = Get-ADOrganizationalUnit -Identity $targetOu @adArgs
-            $numbers = Get-ADComputer -Filter "Name -like '$prefix*'" @adArgs | ForEach-Object { if ($_.Name -match ('^' + [regex]::Escape($prefix) + '(\d+)$')) { [int]$Matches[1] } }
-            $nextNumber = if ($numbers) { ($numbers | Measure-Object -Maximum).Maximum + 1 } else { 1 }
-            do {
-                $computerName = $prefix + $nextNumber.ToString('000')
-                $computerExists = Get-ADComputer -Filter "Name -eq '$computerName'" @adArgs
-                if ($computerExists) { $nextNumber++ }
-            } while ($computerExists)
-            $managedBy = if ($existingUser) { $existingUser.DistinguishedName } else { $job.directory.samAccountName }
-            $computerArgs = @{ Name = $computerName; SamAccountName = "$computerName`$"; Path = $targetOu; Description = $computerPlan.description; ManagedBy = $managedBy; Enabled = $true }
-            Invoke-ApprovedAction "Create AD computer ($computerType)" $computerName { New-ADComputer @computerArgs @adArgs }
-        }
-        'CreateHelpdeskTicket' {
-            if ($Mode -eq 'WhatIf') { Add-RunLog $actionType 'simulated' $job.helpdesk.subject; break }
-            if (-not $PSCmdlet.ShouldProcess($job.helpdesk.baseUrl, "Create HelpDesk ticket '$($job.helpdesk.subject)'")) { Add-RunLog $actionType 'skipped' $job.helpdesk.subject; break }
-            $helpdeskCredential = Get-Credential -Message 'Enter the i-net HelpDesk API account.'
-            $plainPassword = $helpdeskCredential.GetNetworkCredential().Password
-            try {
-                $basicBytes = [Text.Encoding]::ASCII.GetBytes("$($helpdeskCredential.UserName):$plainPassword")
-                $headers = @{ Authorization = "Basic $([Convert]::ToBase64String($basicBytes))" }
-                $body = @{ text = $job.helpdesk.text; htmlContent = $false; ticketFields = @{ subject = $job.helpdesk.subject }; actionArguments = @{} } | ConvertTo-Json -Depth 8
-                $ticket = Invoke-RestMethod -Uri "$($job.helpdesk.baseUrl.TrimEnd('/'))/api/ticket/create" -Method Post -Headers $headers -ContentType 'application/json; charset=utf-8' -Body $body
-                Add-RunLog $actionType 'completed' "Ticket response received: $($ticket | ConvertTo-Json -Compress -Depth 3)"
-            } finally {
-                $plainPassword = $null
-                $basicBytes = $null
-                $headers = $null
-            }
-        }
-        default { Add-RunLog $actionType 'skipped' 'Unknown action type.' }
-    }
-}
-
-$resultPath = [IO.Path]::ChangeExtension($resolvedJobPath, '.result.json')
-[pscustomobject]@{
-    schemaVersion = 1
-    jobId = $job.jobId
-    mode = $Mode
-    startedAt = $startedAt.ToString('o')
-    completedAt = (Get-Date).ToString('o')
-    computerName = $env:COMPUTERNAME
-    operator = [Security.Principal.WindowsIdentity]::GetCurrent().Name
-    log = $script:RunLog
-} | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $resultPath -Encoding UTF8
-
-Write-Host "Finished. Result: $resultPath" -ForegroundColor Green
+if ($runStatus -in @('partial', 'failed')) { exit 1 }

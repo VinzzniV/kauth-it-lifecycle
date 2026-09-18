@@ -4,10 +4,12 @@ export type ItemStatus = "requested" | "approved" | "active" | "remove" | "remov
 export type ServiceItem = { id: string; key: string; label: string; category: string; status: ItemStatus; source: string; details?: string };
 export type TaskItem = { id: string; eventType: LifecycleType; title: string; owner: string; executionType: "manual" | "simulated"; status: "open" | "ready" | "done"; dueDate?: string | null; completedAt?: string | null };
 export type LifecycleEvent = { id: string; type: LifecycleType; status: string; sourceFilename: string; importedAt: string };
+export type AutomationChange = { id: string; action: string; resourceType: string; resourceId: string; relation: string; beforeValue?: string | null; afterValue?: string | null; rollbackAction: string; status: string };
+export type AutomationRun = { id: string; jobId: string; operation: "execute" | "rollback"; mode: "WhatIf" | "Execute"; status: string; relatedRunId?: string | null; canRollback: boolean; startedAt: string; completedAt?: string | null; error?: string; changes: AutomationChange[] };
 export type EmployeeRecord = {
   id: string; personnelNumber: string; firstName: string; lastName: string; company: string; department: string;
-  jobTitle: string; status: "pending" | "active" | "leaving" | "inactive"; startDate?: string | null; endDate?: string | null;
-  services: ServiceItem[]; tasks: TaskItem[]; events: LifecycleEvent[];
+  jobTitle: string; status: "pending" | "active" | "leaving" | "inactive" | "completed"; startDate?: string | null; endDate?: string | null;
+  services: ServiceItem[]; tasks: TaskItem[]; events: LifecycleEvent[]; automationRuns?: AutomationRun[];
 };
 
 export type MasterDataKind = "group" | "application" | "task" | "ou";
@@ -41,11 +43,13 @@ export type AutomationJob = {
   schemaVersion: 1;
   jobId: string;
   createdAt: string;
-  requestedMode: "WhatIf";
+  operation: "execute";
+  requestedMode: "WhatIf" | "Execute";
   lifecycleType: LifecycleType;
-  person: { personnelNumber: string; firstName: string; lastName: string; displayName: string; department: string; jobTitle: string; company: string; startDate?: string | null; endDate?: string | null };
+  person: { employeeId: string; personnelNumber: string; firstName: string; lastName: string; displayName: string; department: string; jobTitle: string; company: string; startDate?: string | null; endDate?: string | null };
   directory: { domain: "kauth.local"; samAccountName: string; userPrincipalName: string; mail: string; description: string; title: string; targetOu: string; disabledOu: "OU=deaktivierte User,DC=kauth,DC=local"; suggestedGroups: string[]; referenceUser: { displayName: string; givenNameInitial: string; surname: string } | null; computers: Array<{ type: "Notebook" | "Workstation"; prefix: string; targetOu: string; description: string }> };
   helpdesk: { baseUrl: "http://pk-srvhlpdsk001:8002"; subject: string; text: string };
+  automationTaskIds: string[];
   actions: Array<{ type: string; target: string; requiresApproval: true }>;
 };
 
@@ -130,13 +134,15 @@ export function buildAutomationJob(person: EmployeeRecord): AutomationJob {
 
   return {
     schemaVersion: 1,
+    operation: "execute",
     jobId: `lifecycle-${person.personnelNumber}-${Date.now()}`,
     createdAt: new Date().toISOString(),
     requestedMode: "WhatIf",
     lifecycleType,
-    person: { personnelNumber: person.personnelNumber, firstName: person.firstName, lastName: person.lastName, displayName: `${person.firstName} ${person.lastName}`, department: person.department, jobTitle: person.jobTitle, company: person.company, startDate: person.startDate, endDate: person.endDate },
+    person: { employeeId: person.id, personnelNumber: person.personnelNumber, firstName: person.firstName, lastName: person.lastName, displayName: `${person.firstName} ${person.lastName}`, department: person.department, jobTitle: person.jobTitle, company: person.company, startDate: person.startDate, endDate: person.endDate },
     directory: { domain: "kauth.local", samAccountName, userPrincipalName: `${samAccountName}@kauth.de`, mail: `${samAccountName}@kauth.de`, description: person.jobTitle, title: person.jobTitle, targetOu, disabledOu: "OU=deaktivierte User,DC=kauth,DC=local", suggestedGroups: Array.from(suggestedGroups), referenceUser, computers },
     helpdesk: { baseUrl: "http://pk-srvhlpdsk001:8002", subject, text: `${subject}\nPersonalnummer: ${person.personnelNumber}\nAbteilung: ${person.department || "nicht angegeben"}\nTermin: ${lifecycleType === "offboarding" ? person.endDate ?? "offen" : person.startDate ?? "offen"}\nQuelle: ${person.events[0]?.sourceFilename ?? "Lifecycle-Portal"}` },
+    automationTaskIds: person.tasks.filter((task) => task.executionType === "simulated" && task.status !== "done").map((task) => task.id),
     actions: actions.map((type) => ({ type, target: type.startsWith("AddGroup:") ? type.slice(9) : type.startsWith("CreateAdComputer:") ? computers.find((computer) => type.endsWith(computer.type))?.prefix + "xxx" : type === "CopyGroupsFromReference" ? referenceUser?.displayName ?? "Referenzbenutzer" : samAccountName, requiresApproval: true })),
   };
 }

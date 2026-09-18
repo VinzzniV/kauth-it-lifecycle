@@ -35,6 +35,20 @@ export const auditEntries = sqliteTable("audit_entries", {
   action: text("action").notNull(), detail: text("detail").notNull().default(""), createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 }, (table) => [index("idx_audit_entries_employee_id").on(table.employeeId)]);
 
+export const automationRuns = sqliteTable("automation_runs", {
+  id: text("id").primaryKey(), employeeId: text("employee_id").notNull().references(() => employees.id, { onDelete: "cascade" }),
+  jobId: text("job_id").notNull(), operation: text("operation").notNull().default("execute"), mode: text("mode").notNull(),
+  status: text("status").notNull(), relatedRunId: text("related_run_id"), canRollback: integer("can_rollback", { mode: "boolean" }).notNull().default(false),
+  startedAt: text("started_at").notNull(), completedAt: text("completed_at"), error: text("error").notNull().default(""),
+}, (table) => [uniqueIndex("idx_automation_runs_job_id").on(table.jobId), index("idx_automation_runs_employee_started").on(table.employeeId, table.startedAt)]);
+
+export const automationChanges = sqliteTable("automation_changes", {
+  id: text("id").primaryKey(), runId: text("run_id").notNull().references(() => automationRuns.id, { onDelete: "cascade" }),
+  action: text("action").notNull(), resourceType: text("resource_type").notNull(), resourceId: text("resource_id").notNull(),
+  relation: text("relation").notNull().default(""), beforeValue: text("before_value"), afterValue: text("after_value"),
+  rollbackAction: text("rollback_action").notNull().default("manual"), status: text("status").notNull().default("completed"),
+}, (table) => [index("idx_automation_changes_run_id").on(table.runId)]);
+
 export const masterData = sqliteTable("master_data", {
   id: text("id").primaryKey(), kind: text("kind").notNull(), label: text("label").notNull(), value: text("value").notNull().default(""),
   owner: text("owner").notNull().default("IT"), active: integer("active", { mode: "boolean" }).notNull().default(true),

@@ -18,12 +18,24 @@ $listener = [Net.HttpListener]::new()
 $listener.Prefixes.Add($ListenPrefix)
 $listener.Start()
 Write-Host "IT Lifecycle Gateway listening on $ListenPrefix" -ForegroundColor Cyan
-Write-Host 'Keep this window open. Only WhatIf jobs are accepted.' -ForegroundColor DarkGray
+Write-Host 'Keep this window open. WhatIf, Execute and rollback jobs are accepted.' -ForegroundColor DarkGray
 
 try {
     while ($listener.IsListening) {
         $context = $listener.GetContext()
         try {
+            if ($context.Request.HttpMethod -eq 'GET' -and $context.Request.Url.AbsolutePath -eq '/results') {
+                if ($context.Request.Headers['Authorization'] -ne "Bearer $token") { $context.Response.StatusCode = 401; continue }
+                $safeResultId = ([string]$context.Request.QueryString['jobId']) -replace '[^a-zA-Z0-9._-]', '_'
+                if ([string]::IsNullOrWhiteSpace($safeResultId)) { $context.Response.StatusCode = 400; continue }
+                $resultPath = Join-Path $QueuePath "$safeResultId.result.json"
+                if (-not (Test-Path -LiteralPath $resultPath)) { $context.Response.StatusCode = 202; continue }
+                $resultBytes = [IO.File]::ReadAllBytes($resultPath)
+                $context.Response.StatusCode = 200
+                $context.Response.ContentType = 'application/json'
+                $context.Response.OutputStream.Write($resultBytes, 0, $resultBytes.Length)
+                continue
+            }
             if ($context.Request.HttpMethod -ne 'POST' -or $context.Request.Url.AbsolutePath -ne '/jobs') {
                 $context.Response.StatusCode = 404
                 continue
@@ -35,14 +47,14 @@ try {
             $reader = [IO.StreamReader]::new($context.Request.InputStream, $context.Request.ContentEncoding)
             $raw = $reader.ReadToEnd()
             $job = $raw | ConvertFrom-Json
-            if ($job.schemaVersion -ne 1 -or $job.requestedMode -ne 'WhatIf' -or $job.directory.domain -ne 'kauth.local') {
+            if ($job.schemaVersion -ne 1 -or $job.requestedMode -notin @('WhatIf', 'Execute') -or $job.directory.domain -ne 'kauth.local' -or $job.operation -notin @('execute', 'rollback')) {
                 $context.Response.StatusCode = 400
                 continue
             }
             $safeJobId = ([string]$job.jobId) -replace '[^a-zA-Z0-9._-]', '_'
             $jobPath = Join-Path $QueuePath "$safeJobId.json"
             $raw | Set-Content -LiteralPath $jobPath -Encoding UTF8
-            Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'RemoteSigned', '-File', $agentPath, '-JobPath', $jobPath, '-Mode', 'WhatIf')
+            Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'RemoteSigned', '-File', $agentPath, '-JobPath', $jobPath, '-Mode', $job.requestedMode)
             $payload = @{ ok = $true; jobId = $job.jobId } | ConvertTo-Json -Compress
             $bytes = [Text.Encoding]::UTF8.GetBytes($payload)
             $context.Response.StatusCode = 202
@@ -59,4 +71,3 @@ try {
     $listener.Stop()
     $listener.Close()
 }
-
