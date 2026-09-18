@@ -10,6 +10,18 @@ export type EmployeeRecord = {
   services: ServiceItem[]; tasks: TaskItem[]; events: LifecycleEvent[];
 };
 
+export type AutomationJob = {
+  schemaVersion: 1;
+  jobId: string;
+  createdAt: string;
+  requestedMode: "WhatIf";
+  lifecycleType: LifecycleType;
+  person: { personnelNumber: string; firstName: string; lastName: string; displayName: string; department: string; jobTitle: string; company: string; startDate?: string | null; endDate?: string | null };
+  directory: { domain: "kauth.local"; samAccountName: string; userPrincipalName: string; mail: string; targetOu: string; disabledOu: "OU=deaktivierte User,DC=kauth,DC=local"; suggestedGroups: string[] };
+  helpdesk: { baseUrl: "http://pk-srvhlpdsk001:8002"; subject: string; text: string };
+  actions: Array<{ type: string; target: string; requiresApproval: true }>;
+};
+
 const uid = (prefix: string) => `${prefix}-${Math.random().toString(36).slice(2, 9)}`;
 
 export const demoEmployees: EmployeeRecord[] = [
@@ -43,6 +55,43 @@ function isoDate(value: string) {
   return match ? `${match[3]}-${match[2].padStart(2, "0")}-${match[1].padStart(2, "0")}` : value.slice(0, 10) || null;
 }
 function keyOf(label: string) { return label.toLowerCase().replace(/[^a-z0-9äöüß]+/g, "-").replace(/(^-|-$)/g, ""); }
+
+function accountPart(value: string) {
+  return value.toLowerCase().trim().replace(/ä/g, "ae").replace(/ö/g, "oe").replace(/ü/g, "ue").replace(/ß/g, "ss").normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9.-]/g, "");
+}
+
+export function buildAutomationJob(person: EmployeeRecord): AutomationJob {
+  const lifecycleType = person.events[0]?.type ?? "change";
+  const samAccountName = `${accountPart(person.firstName)}.${accountPart(person.lastName)}`;
+  const serviceText = person.services.map((service) => service.label.toLowerCase()).join(" ");
+  const suggestedGroups = new Set<string>();
+  if (serviceText.includes("habel")) suggestedGroups.add("Habel-User");
+  if (serviceText.includes("caq")) suggestedGroups.add("CAQ-User");
+  if (serviceText.includes("infor")) suggestedGroups.add("InforLN_UserPRD");
+  if (serviceText.includes("vpn")) suggestedGroups.add("VPNUser_Mitarbeiter_GG");
+  if (serviceText.includes("internet")) suggestedGroups.add("WG_InternetAccess_Restricted_GG");
+  if (`${person.department} ${person.company}`.toLowerCase().includes("denkingen")) {
+    suggestedGroups.add("Denkingen_Alle_Benutzer_GG");
+    suggestedGroups.add("Denkingen_MailSignatur_KauthDenkingen_GG");
+  }
+  const targetOu = lifecycleType === "offboarding" ? "OU=deaktivierte User,DC=kauth,DC=local" : "REVIEW_REQUIRED";
+  const actions = lifecycleType === "offboarding"
+    ? ["SnapshotAdAccount", "DisableAdUser", "RemoveGroupMemberships", "MoveAdUser", "CreateHelpdeskTicket"]
+    : ["CreateAdUser", ...Array.from(suggestedGroups, (group) => `AddGroup:${group}`), "CreateHelpdeskTicket"];
+  const subject = `${lifecycleType === "offboarding" ? "Offboarding" : lifecycleType === "onboarding" ? "Onboarding" : "Wechsel"}: ${person.firstName} ${person.lastName}`;
+
+  return {
+    schemaVersion: 1,
+    jobId: `lifecycle-${person.personnelNumber}-${Date.now()}`,
+    createdAt: new Date().toISOString(),
+    requestedMode: "WhatIf",
+    lifecycleType,
+    person: { personnelNumber: person.personnelNumber, firstName: person.firstName, lastName: person.lastName, displayName: `${person.firstName} ${person.lastName}`, department: person.department, jobTitle: person.jobTitle, company: person.company, startDate: person.startDate, endDate: person.endDate },
+    directory: { domain: "kauth.local", samAccountName, userPrincipalName: `${samAccountName}@kauth.de`, mail: `${samAccountName}@kauth.de`, targetOu, disabledOu: "OU=deaktivierte User,DC=kauth,DC=local", suggestedGroups: Array.from(suggestedGroups) },
+    helpdesk: { baseUrl: "http://pk-srvhlpdsk001:8002", subject, text: `${subject}\nPersonalnummer: ${person.personnelNumber}\nAbteilung: ${person.department || "nicht angegeben"}\nTermin: ${lifecycleType === "offboarding" ? person.endDate ?? "offen" : person.startDate ?? "offen"}\nQuelle: ${person.events[0]?.sourceFilename ?? "Lifecycle-Portal"}` },
+    actions: actions.map((type) => ({ type, target: type.startsWith("AddGroup:") ? type.slice(9) : samAccountName, requiresApproval: true })),
+  };
+}
 
 export function parseRows(rows: unknown[][], filename: string): EmployeeRecord {
   const normalized = rows.map((row) => row.map(clean));
