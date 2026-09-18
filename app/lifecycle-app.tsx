@@ -65,6 +65,7 @@ import {
   AutomationRun,
   buildAutomationJob,
   buildPowerShellPreview,
+  ComputerAssignments,
   defaultMasterData,
   EmployeeRecord,
   getReferenceUserName,
@@ -75,11 +76,7 @@ import {
 } from "./data";
 
 export type AppView =
-  | "overview"
-  | "people"
-  | "tasks"
-  | "automations"
-  | "master-data";
+  "overview" | "people" | "tasks" | "automations" | "master-data";
 type ApiMessage = { error?: string; id?: string; jobId?: string };
 type EmployeeListResponse = ApiMessage & { employees?: EmployeeRecord[] };
 type AdCredential = { username: string; password: string };
@@ -143,8 +140,7 @@ function downloadText(name: string, body: string, type: string) {
   anchor.click();
   URL.revokeObjectURL(url);
 }
-function downloadJob(person: EmployeeRecord) {
-  const job = buildAutomationJob(person);
+function downloadJob(job: ReturnType<typeof buildAutomationJob>) {
   downloadText(
     `${job.jobId}.json`,
     JSON.stringify(job, null, 2),
@@ -940,7 +936,15 @@ function AutomationsView({
   const [credentialAction, setCredentialAction] = useState<
     "reference" | "WhatIf" | "Execute"
   >("WhatIf");
-  const job = active ? buildAutomationJob(active) : null;
+  const [computerAssignments, setComputerAssignments] =
+    useState<ComputerAssignments>({});
+  const job = active ? buildAutomationJob(active, computerAssignments) : null;
+  const invalidExistingComputer =
+    job?.directory.computers.find(
+      (computer) =>
+        computer.mode === "existing" &&
+        !/^[A-Z0-9-]{1,15}$/.test(computer.existingName ?? ""),
+    ) ?? null;
   useEffect(() => {
     if (result)
       window.setTimeout(
@@ -975,6 +979,12 @@ function AutomationsView({
     adCredential: AdCredential,
   ) {
     if (!job) return;
+    if (invalidExistingComputer) {
+      setResult(
+        `Bitte für ${invalidExistingComputer.type} einen gültigen AD-Computernamen mit maximal 15 Zeichen eingeben.`,
+      );
+      return;
+    }
     if (mode === "Execute" && job.directory.targetOu === "REVIEW_REQUIRED") {
       setResult(
         "Vor der echten Ausführung muss eine AD-Ziel-OU eingetragen werden.",
@@ -1045,6 +1055,13 @@ function AutomationsView({
     if (credentialAction === "reference") void checkReference(credential);
     else void requestRun(credentialAction, credential);
   }
+  function selectEmployee(person: EmployeeRecord) {
+    setComputerAssignments({});
+    setTargetOu(person.directoryTargetOu ?? "");
+    setReferenceUser(getReferenceUserName(person));
+    setResult("");
+    setActive(person);
+  }
   return (
     <div className="grid gap-6 xl:grid-cols-[320px_minmax(0,1fr)]">
       <AdCredentialDialog
@@ -1065,7 +1082,7 @@ function AutomationsView({
           {employees.map((person) => (
             <button
               key={person.id}
-              onClick={() => setActive(person)}
+              onClick={() => selectEmployee(person)}
               className={`flex w-full items-center gap-3 rounded-xl border p-3 text-left ${active?.id === person.id ? "border-[#176b87] bg-[#eef7f8]" : "border-[#e3e8eb] hover:bg-[#f7f9fa]"}`}
             >
               <span className="grid size-9 place-items-center rounded-full bg-[#e7f4f5] text-xs font-semibold text-[#176b87]">
@@ -1165,6 +1182,102 @@ function AutomationsView({
               </div>
             </Card>
           )}
+          {job.directory.computers.length > 0 && (
+            <Card className="border-[#dce3e7] bg-white p-5">
+              <p className="font-medium">Computer zuordnen</p>
+              <p className="mt-1 text-sm leading-6 text-[#71808c]">
+                Standardmäßig wird der nächste freie Rechnername angelegt. Bei
+                der Übernahme eines vorhandenen Rechners ändert der Agent nur
+                dessen Beschreibung auf „
+                {job.person.department || "Keine Abteilung"} /{" "}
+                {job.person.displayName}“.
+              </p>
+              <div className="mt-4 space-y-4">
+                {job.directory.computers.map((computer) => (
+                  <div
+                    key={computer.type}
+                    className="rounded-xl border border-[#e1e7ea] p-4"
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div>
+                        <p className="text-sm font-medium">{computer.type}</p>
+                        <p className="mt-1 text-xs text-[#71808c]">
+                          {computer.mode === "new"
+                            ? `Neuanlage nach Schema ${computer.prefix}xxx`
+                            : "Bestehendes AD-Computerobjekt; nur Beschreibung ändern"}
+                        </p>
+                      </div>
+                      <div className="flex rounded-lg border border-[#dce3e7] p-1">
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant={
+                            computer.mode === "new" ? "default" : "ghost"
+                          }
+                          onClick={() =>
+                            setComputerAssignments((current) => ({
+                              ...current,
+                              [computer.type]: { mode: "new" },
+                            }))
+                          }
+                        >
+                          Neu anlegen
+                        </Button>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant={
+                            computer.mode === "existing" ? "default" : "ghost"
+                          }
+                          onClick={() =>
+                            setComputerAssignments((current) => ({
+                              ...current,
+                              [computer.type]: {
+                                mode: "existing",
+                                existingName:
+                                  current[computer.type]?.existingName ?? "",
+                              },
+                            }))
+                          }
+                        >
+                          Vorhandenen übernehmen
+                        </Button>
+                      </div>
+                    </div>
+                    {computer.mode === "existing" && (
+                      <div className="mt-3">
+                        <Input
+                          value={computer.existingName ?? ""}
+                          maxLength={15}
+                          onChange={(event) =>
+                            setComputerAssignments((current) => ({
+                              ...current,
+                              [computer.type]: {
+                                mode: "existing",
+                                existingName: event.target.value.toUpperCase(),
+                              },
+                            }))
+                          }
+                          placeholder={`z. B. ${computer.prefix}042`}
+                          className={
+                            computer.existingName &&
+                            !/^[A-Z0-9-]{1,15}$/.test(computer.existingName)
+                              ? "border-rose-400"
+                              : ""
+                          }
+                        />
+                        <p className="mt-2 text-xs text-[#71808c]">
+                          Name, OU, Gruppen, Status und „Verwaltet von“ bleiben
+                          unverändert. Der alte Beschreibungstext wird für den
+                          Rollback protokolliert.
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </Card>
+          )}
           <Card className="border-[#dce3e7] bg-white p-5">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
@@ -1205,7 +1318,7 @@ function AutomationsView({
                 onClick={() =>
                   downloadText(
                     `${job.jobId}.ps1`,
-                    buildPowerShellPreview(active),
+                    buildPowerShellPreview(active, job),
                     "text/plain",
                   )
                 }
@@ -1215,7 +1328,7 @@ function AutomationsView({
               </Button>
             </div>
             <pre className="max-h-80 overflow-auto p-5 text-sm leading-6 text-[#c8d7e5]">
-              {buildPowerShellPreview(active)}
+              {buildPowerShellPreview(active, job)}
             </pre>
           </Card>
           <Card className="border-[#dce3e7] bg-white p-5">
@@ -1229,13 +1342,13 @@ function AutomationsView({
                 </p>
               </div>
               <div className="flex flex-wrap gap-2">
-                <Button variant="outline" onClick={() => downloadJob(active)}>
+                <Button variant="outline" onClick={() => downloadJob(job)}>
                   <Download className="size-4" />
                   Auftrag
                 </Button>
                 <Button
                   variant="outline"
-                  disabled={running}
+                  disabled={running || !!invalidExistingComputer}
                   onClick={() => askForCredentials("WhatIf")}
                 >
                   <Bot className="size-4" />
@@ -1247,6 +1360,7 @@ function AutomationsView({
                       disabled={
                         running ||
                         job.directory.targetOu === "REVIEW_REQUIRED" ||
+                        !!invalidExistingComputer ||
                         (!!job.directory.referenceUser &&
                           active.directoryReferenceStatus !== "found")
                       }

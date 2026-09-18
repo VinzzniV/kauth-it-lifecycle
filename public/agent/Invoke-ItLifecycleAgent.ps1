@@ -117,6 +117,17 @@ try {
                 'Remove-ADComputer' {
                     if (Invoke-ApprovedAction $rollbackAction $resourceId { Remove-ADComputer -Identity $resourceId -Confirm:$false @adArgs }) { Add-Change $rollbackAction 'AD-Computer' $resourceId 'Geraet der Mitarbeiterakte' $change.afterValue $null 'manual' }
                 }
+                'Restore-ADComputerDescription' {
+                    $originalDescription = Read-StoredValue $change.beforeValue
+                    $restoreDescription = {
+                        if ($null -eq $originalDescription -or [string]::IsNullOrEmpty([string]$originalDescription)) {
+                            Set-ADComputer -Identity $resourceId -Clear Description @adArgs
+                        } else {
+                            Set-ADComputer -Identity $resourceId -Description ([string]$originalDescription) @adArgs
+                        }
+                    }
+                    if (Invoke-ApprovedAction $rollbackAction $resourceId $restoreDescription) { Add-Change 'Computerbeschreibung wiederhergestellt' 'AD-Computer' $resourceId 'Nur Beschreibung; alle anderen Eigenschaften unveraendert' $change.afterValue $originalDescription 'manual' }
+                }
                 'Remove-ADGroupMember' {
                     if (Invoke-ApprovedAction $rollbackAction $resourceId { Remove-ADGroupMember -Identity $resourceId -Members $job.directory.samAccountName -Confirm:$false @adArgs }) { Add-Change $rollbackAction 'AD-Gruppe' $resourceId "Mitglied: $($job.directory.samAccountName)" $true $false 'Add-ADGroupMember' }
                 }
@@ -137,7 +148,7 @@ try {
     } else {
         if ($job.directory.samAccountName -notmatch '^[a-z0-9.-]+$') { throw 'Invalid sAMAccountName in job.' }
         if ($Mode -eq 'Execute' -and $job.lifecycleType -ne 'offboarding' -and $job.directory.targetOu -eq 'REVIEW_REQUIRED') { throw 'Select and approve a target OU in the job before running the agent.' }
-        if ($Mode -eq 'Execute' -and @($job.directory.computers | Where-Object { $_.prefix -eq 'REVIEW_REQUIRED' -or $_.targetOu -eq 'REVIEW_REQUIRED' }).Count) { throw 'Select and approve the location and computer OU before running the agent.' }
+        if ($Mode -eq 'Execute' -and @($job.directory.computers | Where-Object { $_.mode -ne 'existing' -and ($_.prefix -eq 'REVIEW_REQUIRED' -or $_.targetOu -eq 'REVIEW_REQUIRED') }).Count) { throw 'Select and approve the location and computer OU before running the agent.' }
 
         $existingUser = Get-ADUser -Filter "SamAccountName -eq '$($job.directory.samAccountName)'" @adArgs -Properties MemberOf,Mail,Enabled,DistinguishedName
         $assignedGroups = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
@@ -218,6 +229,23 @@ try {
                     $managedBy = if ($existingUser) { $existingUser.DistinguishedName } else { $job.directory.samAccountName }
                     $computerArgs = @{ Name = $computerName; SamAccountName = "$computerName`$"; Path = $targetOu; Description = $computerPlan.description; ManagedBy = $managedBy; Enabled = $true }
                     if (Invoke-ApprovedAction "Create AD computer ($computerType)" $computerName { New-ADComputer @computerArgs @adArgs }) { Add-Change "$computerType angelegt" 'AD-Computer' $computerName "Geraet von $($job.person.displayName); verwaltet durch $($job.directory.samAccountName)" $null @{ ou = $targetOu; description = $computerPlan.description; managedBy = $managedBy } 'Remove-ADComputer' }
+                }
+                'ReuseAdComputer:*' {
+                    $computerType = $actionType.Substring(16)
+                    $computerPlan = @($job.directory.computers | Where-Object { $_.type -eq $computerType }) | Select-Object -First 1
+                    if (-not $computerPlan) { throw "Computer plan '$computerType' was not found." }
+                    $computerName = ([string]$computerPlan.existingName).Trim().ToUpperInvariant()
+                    if ($computerName -notmatch '^[A-Z0-9-]{1,15}$') { throw "Invalid existing computer name: $computerName" }
+                    $existingComputer = Get-ADComputer -Identity $computerName -Properties Description,DistinguishedName @adArgs
+                    $oldDescription = if ($null -eq $existingComputer.Description) { $null } else { [string]$existingComputer.Description }
+                    $newDescription = [string]$computerPlan.description
+                    if ($oldDescription -eq $newDescription) {
+                        Add-RunLog "Reuse AD computer ($computerType)" 'skipped' "$computerName already has the requested description."
+                        break
+                    }
+                    if (Invoke-ApprovedAction "Update AD computer description ($computerType)" $computerName { Set-ADComputer -Identity $existingComputer -Description $newDescription @adArgs }) {
+                        Add-Change 'Computerbeschreibung aktualisiert' 'AD-Computer' $computerName "Geraet von $($job.person.displayName); nur Beschreibung geaendert" $oldDescription $newDescription 'Restore-ADComputerDescription'
+                    }
                 }
                 'CreateHelpdeskTicket' {
                     if ($Mode -eq 'WhatIf') { Add-RunLog $actionType 'simulated' $job.helpdesk.subject; Add-Change 'Helpdesk-Ticket erstellen' 'Helpdesk-Ticket' $job.helpdesk.subject "Vorgang fuer $($job.person.displayName)" $null $job.helpdesk.text 'manual' 'simulated'; break }
