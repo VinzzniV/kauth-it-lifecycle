@@ -21,3 +21,9 @@ Prerequisites:
 - Network access to kauth.local and http://pk-srvhlpdsk001:8002
 - Approved target OU in the job JSON for onboarding
 
+Direct start from the portal (optional pilot gateway):
+- Run Start-ItLifecycleGateway.ps1 interactively on PK-SRVMGMT002.
+- Connect its localhost listener through a private Sites tunnel as `management_agent`.
+- Configure the same gateway token as the Sites secret MANAGEMENT_AGENT_TOKEN.
+- The gateway accepts only WhatIf jobs and opens the local credential prompt on PK-SRVMGMT002.
+- Never publish port 8788 directly to the internet.

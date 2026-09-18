@@ -10,6 +10,23 @@ export type EmployeeRecord = {
   services: ServiceItem[]; tasks: TaskItem[]; events: LifecycleEvent[];
 };
 
+export type MasterDataKind = "group" | "application" | "task" | "ou";
+export type MasterDataItem = { id: string; kind: MasterDataKind; label: string; value: string; owner: string; active: boolean };
+
+export const defaultMasterData: MasterDataItem[] = [
+  { id: "group-habel", kind: "group", label: "Habel", value: "Habel-User", owner: "IT", active: true },
+  { id: "group-caq", kind: "group", label: "CAQ", value: "CAQ-User", owner: "IT", active: true },
+  { id: "group-infor", kind: "group", label: "Infor LN", value: "InforLN_UserPRD", owner: "IT", active: true },
+  { id: "group-vpn", kind: "group", label: "VPN Mitarbeiter", value: "VPNUser_Mitarbeiter_GG", owner: "IT", active: true },
+  { id: "group-internet", kind: "group", label: "Internet eingeschränkt", value: "WG_InternetAccess_Restricted_GG", owner: "IT", active: true },
+  { id: "app-office", kind: "application", label: "Microsoft Office", value: "Microsoft Office", owner: "IT", active: true },
+  { id: "app-mail", kind: "application", label: "E-Mail-Adresse", value: "E-Mail Adresse", owner: "IT", active: true },
+  { id: "app-habel", kind: "application", label: "Habel", value: "Habel", owner: "CO / IT", active: true },
+  { id: "task-notebook", kind: "task", label: "Notebook bereitstellen", value: "manual", owner: "IT", active: true },
+  { id: "task-account", kind: "task", label: "Benutzerkonto anlegen", value: "agent", owner: "IT", active: true },
+  { id: "ou-disabled", kind: "ou", label: "Deaktivierte Benutzer", value: "OU=deaktivierte User,DC=kauth,DC=local", owner: "IT", active: true },
+];
+
 export type AutomationJob = {
   schemaVersion: 1;
   jobId: string;
@@ -28,7 +45,7 @@ export const demoEmployees: EmployeeRecord[] = [
   {
     id: "emp-1022", personnelNumber: "1022", firstName: "Chiara", lastName: "Luger", company: "Paul Kauth GmbH & Co. KG",
     department: "913610 Personalwesen", jobTitle: "Personal-Referentin", status: "pending", startDate: "2026-10-01",
-    services: ["Notebook", "Internetzugang", "Microsoft Office", "E-Mail-Adresse", "Habel", "ConSense", "Tisoware Terminal", "Tisoware WEB"].map((label, index) => ({ id: `svc-c-${index}`, key: label.toLowerCase().replaceAll(" ", "-"), label, category: index === 0 ? "Gerät" : "Anwendung", status: index < 4 ? "approved" : "requested", source: "Eintritt Laufkarte", details: label === "Habel" ? "Auswahl aus Laufkarte" : "" })),
+    services: ["Notebook", "Internetzugang", "Microsoft Office", "E-Mail-Adresse", "Oder wie MA: L. Romankewicz", "Habel"].map((label, index) => ({ id: `svc-c-${index}`, key: label.toLowerCase().replaceAll(" ", "-"), label, category: index === 0 ? "Gerät" : "Anwendung", status: index < 4 ? "approved" : "requested", source: "Eintritt Laufkarte", details: label === "Habel" ? "Ausnahme: Verantwortlichkeit CO, für IT trotzdem relevant" : "" })),
     tasks: [
       { id: "task-c-1", eventType: "onboarding", title: "Benutzerkonto anlegen", owner: "IT", executionType: "simulated", status: "ready", dueDate: "2026-09-25" },
       { id: "task-c-2", eventType: "onboarding", title: "Notebook vorbereiten und Inventarnummer erfassen", owner: "IT", executionType: "manual", status: "open", dueDate: "2026-09-28" },
@@ -51,8 +68,11 @@ export const demoEmployees: EmployeeRecord[] = [
 
 function clean(value: unknown) { return String(value ?? "").replace(/\s+/g, " ").trim(); }
 function isoDate(value: string) {
-  const match = value.match(/(\d{1,2})[.\/-](\d{1,2})[.\/-](\d{4})/);
-  return match ? `${match[3]}-${match[2].padStart(2, "0")}-${match[1].padStart(2, "0")}` : value.slice(0, 10) || null;
+  const german = value.match(/(\d{1,2})[.-](\d{1,2})[.-](\d{2,4})/);
+  if (german) { const year = german[3].length === 2 ? `20${german[3]}` : german[3]; return `${year}-${german[2].padStart(2, "0")}-${german[1].padStart(2, "0")}`; }
+  const slash = value.match(/(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);
+  if (slash) { const year = slash[3].length === 2 ? `20${slash[3]}` : slash[3]; return `${year}-${slash[1].padStart(2, "0")}-${slash[2].padStart(2, "0")}`; }
+  return value.slice(0, 10) || null;
 }
 function keyOf(label: string) { return label.toLowerCase().replace(/[^a-z0-9äöüß]+/g, "-").replace(/(^-|-$)/g, ""); }
 
@@ -106,8 +126,11 @@ export function parseRows(rows: unknown[][], filename: string): EmployeeRecord {
 
   if (type === "onboarding") {
     normalized.forEach((row) => {
-      if (row[1]?.toUpperCase() === "X" && row[2] && !/^(JA|NEIN)$/i.test(row[2])) {
-        const label = row[2];
+      const selected = row[1]?.toUpperCase() === "X";
+      const owner = row[0]?.toLowerCase() ?? "";
+      const label = row[2] ?? "";
+      const belongsToIt = /^it(?:\s|:|$)/i.test(owner) || /^habel$/i.test(label);
+      if (selected && belongsToIt && label && !/^(JA|NEIN)$/i.test(label)) {
         services.push({ id: uid("svc"), key: keyOf(label), label, category: /notebook|rechner|telefon|handy|kleidung/i.test(label) ? "Gerät" : "Anwendung", status: "requested", source: filename });
       }
     });
@@ -124,10 +147,24 @@ export function parseRows(rows: unknown[][], filename: string): EmployeeRecord {
 
   return {
     id: `emp-${personnelNumber}`, personnelNumber, firstName, lastName, company: lookup("Unternehmen"),
-    department: lookup("Abteilung Name") || lookup("Abteilung"), jobTitle: lookup("Stellenbezeichnung"),
+    department: lookup("Abteilung Name") || lookup("Abteilung"), jobTitle: lookup("Stellenbezeichnung") || lookup("Position") || lookup("Tätigkeit"),
     status: type === "offboarding" ? "leaving" : "pending", startDate: isoDate(lookup("Eintritt")),
     endDate: type === "offboarding" ? isoDate(lookup("Austritt") || lookup("Letzter Arbeitstag")) : null,
     services, tasks,
     events: [{ id: uid("evt"), type, status: "in_review", sourceFilename: filename, importedAt: new Date().toISOString() }],
   };
+}
+
+export function buildPowerShellPreview(person: EmployeeRecord) {
+  const job = buildAutomationJob(person);
+  const lines = [
+    `$JobPath = '.\\${job.jobId}.json'`,
+    `# Ausführung auf PK-SRVMGMT002; Zugangsdaten werden dort lokal abgefragt.`,
+    `.\\Invoke-ItLifecycleAgent.ps1 -JobPath $JobPath -Mode WhatIf`,
+    "",
+    `# Geplante AD-Identität: ${job.directory.userPrincipalName}`,
+    `# Ziel-OU: ${job.directory.targetOu}`,
+    ...job.actions.map((action) => `# ${action.type} -> ${action.target}`),
+  ];
+  return lines.join("\n");
 }

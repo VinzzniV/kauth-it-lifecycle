@@ -78,3 +78,18 @@ export async function PATCH(request: Request) {
     return Response.json({ error: errorMessage(error) }, { status: 400 });
   }
 }
+
+export async function DELETE(request: Request) {
+  try {
+    const { employeeId } = z.object({ employeeId: z.string().min(1) }).parse(await request.json());
+    const db = getDb();
+    await db.batch([
+      db.delete(auditEntries).where(eq(auditEntries.employeeId, employeeId)),
+      db.delete(workflowTasks).where(eq(workflowTasks.employeeId, employeeId)),
+      db.delete(services).where(eq(services.employeeId, employeeId)),
+      db.delete(lifecycleEvents).where(eq(lifecycleEvents.employeeId, employeeId)),
+      db.delete(employees).where(eq(employees.id, employeeId)),
+    ]);
+    return Response.json({ ok: true });
+  } catch (error) { return Response.json({ error: errorMessage(error) }, { status: 400 }); }
+}

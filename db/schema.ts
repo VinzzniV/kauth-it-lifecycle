@@ -34,3 +34,9 @@ export const auditEntries = sqliteTable("audit_entries", {
   id: integer("id").primaryKey({ autoIncrement: true }), employeeId: text("employee_id").notNull().references(() => employees.id, { onDelete: "cascade" }),
   action: text("action").notNull(), detail: text("detail").notNull().default(""), createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 }, (table) => [index("idx_audit_entries_employee_id").on(table.employeeId)]);
+
+export const masterData = sqliteTable("master_data", {
+  id: text("id").primaryKey(), kind: text("kind").notNull(), label: text("label").notNull(), value: text("value").notNull().default(""),
+  owner: text("owner").notNull().default("IT"), active: integer("active", { mode: "boolean" }).notNull().default(true),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [index("idx_master_data_kind_active").on(table.kind, table.active)]);

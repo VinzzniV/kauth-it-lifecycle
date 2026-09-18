@@ -8,6 +8,13 @@
       "when": 1789656057017,
       "tag": "0000_spooky_moira_mactaggert",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1789714536670,
+      "tag": "0001_known_silver_sable",
+      "breakpoints": true
     }
   ]
 }
