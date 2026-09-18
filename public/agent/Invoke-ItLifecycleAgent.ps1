@@ -43,6 +43,9 @@ if ($job.directory.samAccountName -notmatch '^[a-z0-9.-]+$') { throw 'Invalid sA
 if ($Mode -eq 'Execute' -and $job.lifecycleType -ne 'offboarding' -and $job.directory.targetOu -eq 'REVIEW_REQUIRED') {
     throw 'Select and approve a target OU in the job before running the agent.'
 }
+if ($Mode -eq 'Execute' -and @($job.directory.computers | Where-Object { $_.prefix -eq 'REVIEW_REQUIRED' -or $_.targetOu -eq 'REVIEW_REQUIRED' }).Count) {
+    throw 'Select and approve the location and computer OU before running the agent.'
+}
 
 $script:RunLog = [System.Collections.Generic.List[object]]::new()
 $startedAt = Get-Date
@@ -57,6 +60,18 @@ Add-RunLog 'ValidateAdConnection' 'completed' $job.directory.domain
 
 $adArgs = @{ Server = $job.directory.domain; Credential = $adCredential; ErrorAction = 'Stop' }
 $existingUser = Get-ADUser -Filter "SamAccountName -eq '$($job.directory.samAccountName)'" @adArgs -Properties MemberOf,Mail,Enabled,DistinguishedName
+$referenceUser = $null
+$resolvedTargetOu = [string]$job.directory.targetOu
+if ($job.directory.referenceUser) {
+    $surname = ([string]$job.directory.referenceUser.surname).Replace("'", "''")
+    $initial = ([string]$job.directory.referenceUser.givenNameInitial).Replace("'", "''")
+    $referenceUsers = @(Get-ADUser -Filter "Surname -eq '$surname' -and GivenName -like '$initial*'" @adArgs -Properties MemberOf,DistinguishedName)
+    if ($referenceUsers.Count -ne 1) { throw "Reference user '$($job.directory.referenceUser.displayName)' is not unique. Found: $($referenceUsers.Count)." }
+    $referenceUser = $referenceUsers[0]
+    if ($resolvedTargetOu -eq 'REFERENCE_USER_OU') {
+        $resolvedTargetOu = $referenceUser.DistinguishedName -replace '^CN=(?:\\.|[^,])+,', ''
+    }
+}
 
 foreach ($action in $job.actions) {
     $actionType = [string]$action.type
@@ -73,12 +88,20 @@ foreach ($action in $job.actions) {
                 EmailAddress = $job.directory.mail
                 EmployeeNumber = $job.person.personnelNumber
                 Department = $job.person.department
-                Title = $job.person.jobTitle
+                Description = $job.directory.description
+                Title = $job.directory.title
                 Company = $job.person.company
-                Path = $job.directory.targetOu
+                Path = $resolvedTargetOu
                 Enabled = $false
             }
             Invoke-ApprovedAction 'Create disabled AD user' $job.directory.userPrincipalName { New-ADUser @newUserArgs @adArgs }
+            if ($Mode -eq 'Execute') { $existingUser = Get-ADUser -Identity $job.directory.samAccountName @adArgs -Properties MemberOf,Mail,Enabled,DistinguishedName }
+        }
+        'CopyGroupsFromReference' {
+            if (-not $referenceUser) { throw 'Reference user action exists without a unique reference user.' }
+            foreach ($groupDn in @($referenceUser.MemberOf)) {
+                Invoke-ApprovedAction 'Copy reference group membership' $groupDn { Add-ADGroupMember -Identity $groupDn -Members $job.directory.samAccountName @adArgs }
+            }
         }
         'AddGroup:*' {
             $groupName = $actionType.Substring(9)
@@ -104,6 +127,25 @@ foreach ($action in $job.actions) {
             $disabledOu = [string]$job.directory.disabledOu
             $null = Get-ADOrganizationalUnit -Identity $disabledOu @adArgs
             Invoke-ApprovedAction 'Move AD account' $disabledOu { Move-ADObject -Identity $existingUser.DistinguishedName -TargetPath $disabledOu @adArgs }
+        }
+        'CreateAdComputer:*' {
+            $computerType = $actionType.Substring(17)
+            $computerPlan = @($job.directory.computers | Where-Object { $_.type -eq $computerType }) | Select-Object -First 1
+            if (-not $computerPlan) { throw "Computer plan '$computerType' was not found." }
+            $prefix = [string]$computerPlan.prefix
+            if ($prefix -notmatch '^[A-Z]{2}-CL(NB|WS)$') { throw "Invalid computer prefix: $prefix" }
+            $targetOu = [string]$computerPlan.targetOu
+            $null = Get-ADOrganizationalUnit -Identity $targetOu @adArgs
+            $numbers = Get-ADComputer -Filter "Name -like '$prefix*'" @adArgs | ForEach-Object { if ($_.Name -match ('^' + [regex]::Escape($prefix) + '(\d+)$')) { [int]$Matches[1] } }
+            $nextNumber = if ($numbers) { ($numbers | Measure-Object -Maximum).Maximum + 1 } else { 1 }
+            do {
+                $computerName = $prefix + $nextNumber.ToString('000')
+                $computerExists = Get-ADComputer -Filter "Name -eq '$computerName'" @adArgs
+                if ($computerExists) { $nextNumber++ }
+            } while ($computerExists)
+            $managedBy = if ($existingUser) { $existingUser.DistinguishedName } else { $job.directory.samAccountName }
+            $computerArgs = @{ Name = $computerName; SamAccountName = "$computerName`$"; Path = $targetOu; Description = $computerPlan.description; ManagedBy = $managedBy; Enabled = $true }
+            Invoke-ApprovedAction "Create AD computer ($computerType)" $computerName { New-ADComputer @computerArgs @adArgs }
         }
         'CreateHelpdeskTicket' {
             if ($Mode -eq 'WhatIf') { Add-RunLog $actionType 'simulated' $job.helpdesk.subject; break }
