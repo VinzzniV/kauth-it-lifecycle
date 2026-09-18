@@ -62,6 +62,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import {
+  AutomationChange,
   AutomationRun,
   buildAutomationJob,
   buildPowerShellPreview,
@@ -80,6 +81,15 @@ export type AppView =
 type ApiMessage = { error?: string; id?: string; jobId?: string };
 type EmployeeListResponse = ApiMessage & { employees?: EmployeeRecord[] };
 type AdCredential = { username: string; password: string };
+type ImmediateExecutionResult = {
+  runId?: string;
+  jobId?: string;
+  operation?: string;
+  mode?: "WhatIf" | "Execute";
+  status?: string;
+  error?: string;
+  changes: AutomationChange[];
+};
 const viewMeta: Record<AppView, { title: string; eyebrow: string }> = {
   overview: { title: "Lifecycle-Übersicht", eyebrow: "Heute" },
   people: { title: "Mitarbeiterakten", eyebrow: "Personen" },
@@ -147,7 +157,11 @@ function downloadJob(job: ReturnType<typeof buildAutomationJob>) {
     "application/json",
   );
 }
-async function collectExecutionResult(jobId: string, onComplete: () => void) {
+async function collectExecutionResult(
+  jobId: string,
+  onComplete: () => void,
+  onResult?: (result: ImmediateExecutionResult) => void,
+) {
   for (let attempt = 0; attempt < 150; attempt += 1) {
     const response = await fetch(
       `/api/agent?jobId=${encodeURIComponent(jobId)}`,
@@ -157,12 +171,8 @@ async function collectExecutionResult(jobId: string, onComplete: () => void) {
       continue;
     }
     if (response.ok) {
-      const result = (await response.json()) as {
-        status?: string;
-        error?: string;
-        changes?: unknown[];
-        operation?: string;
-      };
+      const result = (await response.json()) as ImmediateExecutionResult;
+      onResult?.({ ...result, changes: result.changes ?? [] });
       const stored = await fetch("/api/executions", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -927,6 +937,8 @@ function AutomationsView({
   onRefresh: () => void;
 }) {
   const [result, setResult] = useState("");
+  const [latestExecution, setLatestExecution] =
+    useState<ImmediateExecutionResult | null>(null);
   const [running, setRunning] = useState(false);
   const [targetOu, setTargetOu] = useState(active?.directoryTargetOu ?? "");
   const [referenceUser, setReferenceUser] = useState(
@@ -993,6 +1005,7 @@ function AutomationsView({
     }
     setRunning(true);
     setResult("");
+    setLatestExecution(null);
     try {
       const response = await fetch("/api/agent", {
         method: "POST",
@@ -1007,7 +1020,13 @@ function AutomationsView({
         setResult(
           `${mode === "Execute" ? "Ausführung" : "Testlauf"} ${acceptedJobId} wurde angenommen. Ergebnis wird abgerufen …`,
         );
-        setResult(await collectExecutionResult(acceptedJobId, onRefresh));
+        setResult(
+          await collectExecutionResult(
+            acceptedJobId,
+            onRefresh,
+            setLatestExecution,
+          ),
+        );
       }
     } catch {
       setResult("Management-Agent nicht erreichbar.");
@@ -1060,6 +1079,7 @@ function AutomationsView({
     setTargetOu(person.directoryTargetOu ?? "");
     setReferenceUser(getReferenceUserName(person));
     setResult("");
+    setLatestExecution(null);
     setActive(person);
   }
   return (
@@ -1400,6 +1420,41 @@ function AutomationsView({
                 {result}
               </div>
             )}
+            {latestExecution &&
+              latestExecution.operation !== "reference_check" && (
+                <div className="mt-4 rounded-xl border border-[#dce3e7] bg-[#f8fafb] p-4">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <p className="font-medium">
+                        Ergebnis des letzten{" "}
+                        {latestExecution.mode === "WhatIf"
+                          ? "Testlaufs"
+                          : "Laufs"}
+                      </p>
+                      <p className="mt-1 text-sm text-[#71808c]">
+                        Direktansicht – das Ergebnis bleibt zusätzlich in der
+                        Mitarbeiterakte gespeichert.
+                      </p>
+                    </div>
+                    <Badge
+                      variant="outline"
+                      className={badgeClass(latestExecution.status ?? "")}
+                    >
+                      {statusText[latestExecution.status ?? ""] ??
+                        latestExecution.status ??
+                        "Ergebnis"}
+                    </Badge>
+                  </div>
+                  {latestExecution.error && (
+                    <div className="mt-4 rounded-lg border border-rose-200 bg-rose-50 p-3 text-sm text-rose-900">
+                      {latestExecution.error}
+                    </div>
+                  )}
+                  <div className="mt-4">
+                    <ChangeList changes={latestExecution.changes} />
+                  </div>
+                </div>
+              )}
           </Card>
         </div>
       )}
@@ -2124,6 +2179,87 @@ function EmployeeDialog({
   );
 }
 
+function ChangeList({
+  changes,
+  emptyText = "Keine Änderungen protokolliert.",
+}: {
+  changes: AutomationChange[];
+  emptyText?: string;
+}) {
+  const formatChangeValue = (value: unknown) => {
+    if (value === null || value === undefined || value === "") return "—";
+    if (typeof value === "string") return value;
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return String(value);
+    }
+  };
+  const groupChanges = changes.filter(
+    (change) =>
+      change.resourceType === "AD-Gruppe" ||
+      /gruppenmitgliedschaft/i.test(change.action),
+  );
+  const otherChanges = changes.filter(
+    (change) => !groupChanges.includes(change),
+  );
+  const renderChange = (change: AutomationChange) => (
+    <div
+      key={change.id}
+      className="grid gap-2 rounded-xl border border-[#e5eaed] bg-white p-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]"
+    >
+      <div>
+        <p className="text-sm font-medium">{change.action}</p>
+        <p className="mt-1 break-all font-mono text-xs text-[#667680]">
+          {change.resourceType}: {change.resourceId}
+        </p>
+      </div>
+      <div className="flex items-start gap-2 text-xs text-[#667680]">
+        <Link2 className="mt-0.5 size-3.5 shrink-0" />
+        <span>
+          {change.relation || "Direkt mit der Mitarbeiterakte verknüpft"}
+        </span>
+      </div>
+      {(change.beforeValue || change.afterValue) && (
+        <p className="text-xs text-[#7a8790] sm:col-span-2">
+          Vorher: {formatChangeValue(change.beforeValue)} · Nachher:{" "}
+          {formatChangeValue(change.afterValue)}
+        </p>
+      )}
+    </div>
+  );
+
+  if (!changes.length)
+    return (
+      <p className="rounded-xl border border-dashed p-3 text-sm text-[#71808c]">
+        {emptyText}
+      </p>
+    );
+
+  return (
+    <div className="space-y-2">
+      {otherChanges.map(renderChange)}
+      {!!groupChanges.length && (
+        <details className="group overflow-hidden rounded-xl border border-[#dce3e7] bg-white">
+          <summary className="flex cursor-pointer list-none items-center gap-3 px-4 py-3 text-sm font-medium hover:bg-[#f7f9fa]">
+            <ChevronRight className="size-4 text-[#176b87] transition-transform group-open:rotate-90" />
+            <span>
+              {groupChanges.length} Gruppenmitgliedschaft
+              {groupChanges.length === 1 ? "" : "en"}
+            </span>
+            <span className="ml-auto text-xs font-normal text-[#71808c]">
+              Aufklappen
+            </span>
+          </summary>
+          <div className="space-y-2 border-t border-[#e5eaed] bg-[#f8fafb] p-3">
+            {groupChanges.map(renderChange)}
+          </div>
+        </details>
+      )}
+    </div>
+  );
+}
+
 function ExecutionHistory({
   runs,
   onRefresh,
@@ -2262,37 +2398,13 @@ function ExecutionHistory({
               <p className="mt-1 break-words">{run.error}</p>
             </div>
           )}
-          <div className="mt-4 space-y-2">
-            {run.changes.map((change) => (
-              <div
-                key={change.id}
-                className="grid gap-2 rounded-xl border border-[#e5eaed] p-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]"
-              >
-                <div>
-                  <p className="text-sm font-medium">{change.action}</p>
-                  <p className="mt-1 font-mono text-xs text-[#667680]">
-                    {change.resourceType}: {change.resourceId}
-                  </p>
-                </div>
-                <div className="flex items-start gap-2 text-xs text-[#667680]">
-                  <Link2 className="mt-0.5 size-3.5 shrink-0" />
-                  <span>
-                    {change.relation ||
-                      "Direkt mit der Mitarbeiterakte verknüpft"}
-                  </span>
-                </div>
-                {(change.beforeValue || change.afterValue) && (
-                  <p className="sm:col-span-2 text-xs text-[#7a8790]">
-                    Vorher: {change.beforeValue || "—"} · Nachher:{" "}
-                    {change.afterValue || "—"}
-                  </p>
-                )}
-              </div>
-            ))}
-            {!run.changes.length && run.status !== "queued" && (
+          <div className="mt-4">
+            {run.status === "queued" && !run.changes.length ? (
               <p className="rounded-xl border border-dashed p-3 text-sm text-[#71808c]">
-                Keine Änderungen protokolliert.
+                Ergebnis wird noch abgerufen.
               </p>
+            ) : (
+              <ChangeList changes={run.changes} />
             )}
           </div>
         </Card>
