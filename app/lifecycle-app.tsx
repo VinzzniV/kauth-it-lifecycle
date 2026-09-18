@@ -30,6 +30,10 @@ function downloadJob(person: EmployeeRecord) { const job = buildAutomationJob(pe
 async function collectExecutionResult(jobId: string, onComplete: () => void) {
   for (let attempt = 0; attempt < 150; attempt += 1) {
     const response = await fetch(`/api/agent?jobId=${encodeURIComponent(jobId)}`);
+    if (response.status === 202) {
+      await new Promise((resolve) => window.setTimeout(resolve, 2000));
+      continue;
+    }
     if (response.ok) {
       const result = await response.json();
       const stored = await fetch("/api/executions", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(result) });
@@ -38,8 +42,8 @@ async function collectExecutionResult(jobId: string, onComplete: () => void) {
       const storageError = await stored.json().catch(() => ({})) as ApiMessage;
       return `Ergebnis liegt vor, konnte aber nicht gespeichert werden: ${storageError.error ?? `HTTP ${stored.status}`}`;
     }
-    if (response.status !== 202) return "Der Ergebnisabruf wurde beendet.";
-    await new Promise((resolve) => window.setTimeout(resolve, 2000));
+    const pollError = await response.json().catch(() => ({})) as ApiMessage;
+    return pollError.error ?? `Der Ergebnisabruf wurde beendet (HTTP ${response.status}).`;
   }
   return "Die Ausführung läuft weiter. Das Ergebnis kann später erneut geladen werden.";
 }
@@ -148,6 +152,7 @@ function AutomationsView({ employees, active, setActive, openRecord, onRefresh }
   const [targetOu, setTargetOu] = useState(active?.directoryTargetOu ?? "");
   const [referenceUser, setReferenceUser] = useState(active ? getReferenceUserName(active) : "");
   const job = active ? buildAutomationJob(active) : null;
+  useEffect(() => { if (result) window.setTimeout(() => window.scrollTo({ top: document.documentElement.scrollHeight, behavior: "smooth" }), 0); }, [result]);
   async function saveTargetOu() {
     if (!active) return;
     const response = await fetch("/api/employees", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ employeeId: active.id, directoryTargetOu: targetOu }) });
