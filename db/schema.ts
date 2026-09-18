@@ -6,6 +6,7 @@ export const employees = sqliteTable("employees", {
   firstName: text("first_name").notNull(), lastName: text("last_name").notNull(),
   company: text("company").notNull().default(""), department: text("department").notNull().default(""),
   jobTitle: text("job_title").notNull().default(""), status: text("status").notNull().default("active"),
+  directoryTargetOu: text("directory_target_ou").notNull().default(""),
   startDate: text("start_date"), endDate: text("end_date"),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),

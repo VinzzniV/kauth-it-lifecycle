@@ -1,0 +1,1 @@
+ALTER TABLE `employees` ADD `directory_target_ou` text DEFAULT '' NOT NULL;

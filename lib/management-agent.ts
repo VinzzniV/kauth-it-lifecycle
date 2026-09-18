@@ -9,7 +9,12 @@ async function managementRequest(path: string, init: RequestInit) {
   if (runtime.MANAGEMENT_AGENT_TOKEN) headers.authorization = `Bearer ${runtime.MANAGEMENT_AGENT_TOKEN}`;
   const target = gatewayUrl ? `${gatewayUrl.replace(/\/$/, "")}${path}` : `http://management-agent${path}`;
   const outgoing = new Request(target, { ...init, headers: { ...headers, ...(init.headers ?? {}) } });
-  const response = tunnel ? await tunnel.fetch(outgoing) : await fetch(outgoing);
+  let response: Response;
+  try {
+    response = tunnel ? await tunnel.fetch(outgoing) : await fetch(outgoing);
+  } catch {
+    throw new Error("Der Management-Agent ist nicht erreichbar.");
+  }
   if (!response.ok) throw new Error(`Der Management-Agent hat den Auftrag abgelehnt (${response.status}).`);
   return response;
 }

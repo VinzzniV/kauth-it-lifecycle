@@ -1,0 +1,26 @@
+services:
+  it-lifecycle:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: kauth/it-lifecycle:v1
+    container_name: kauth-it-lifecycle
+    restart: unless-stopped
+    ports:
+      - "${APP_PORT:-8080}:8080"
+    environment:
+      PORT: "8080"
+      DATA_PATH: /data
+      LOCAL_BASIC_AUTH_ENABLED: "true"
+      APP_USERNAME: "${APP_USERNAME:?APP_USERNAME fehlt in .env}"
+      APP_PASSWORD: "${APP_PASSWORD:?APP_PASSWORD fehlt in .env}"
+      MANAGEMENT_AGENT_URL: "${MANAGEMENT_AGENT_URL:-http://host.docker.internal:8788}"
+      MANAGEMENT_AGENT_TOKEN: "${MANAGEMENT_AGENT_TOKEN:?MANAGEMENT_AGENT_TOKEN fehlt in .env}"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - it_lifecycle_data:/data
+
+volumes:
+  it_lifecycle_data:
+    name: kauth_it_lifecycle_data

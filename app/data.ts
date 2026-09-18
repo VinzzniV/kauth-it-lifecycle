@@ -9,6 +9,7 @@ export type AutomationRun = { id: string; jobId: string; operation: "execute" | 
 export type EmployeeRecord = {
   id: string; personnelNumber: string; firstName: string; lastName: string; company: string; department: string;
   jobTitle: string; status: "pending" | "active" | "leaving" | "inactive" | "completed"; startDate?: string | null; endDate?: string | null;
+  directoryTargetOu?: string;
   services: ServiceItem[]; tasks: TaskItem[]; events: LifecycleEvent[]; automationRuns?: AutomationRun[];
 };
 
@@ -126,7 +127,7 @@ export function buildAutomationJob(person: EmployeeRecord): AutomationJob {
   const computers: AutomationJob["directory"]["computers"] = [];
   if (lifecycleType === "onboarding" && person.services.some((service) => /notebook|laptop/i.test(service.label))) computers.push({ type: "Notebook", prefix: location ? `${location.code}-CLNB` : "REVIEW_REQUIRED", targetOu: location ? `OU=Notebook,${location.base}` : "REVIEW_REQUIRED", description: computerDescription });
   if (lifecycleType === "onboarding" && person.services.some((service) => /fester rechner|workstation|desktop/i.test(service.label))) computers.push({ type: "Workstation", prefix: location ? `${location.code}-CLWS` : "REVIEW_REQUIRED", targetOu: location ? `OU=Workstation,${location.base}` : "REVIEW_REQUIRED", description: computerDescription });
-  const targetOu = lifecycleType === "offboarding" ? "OU=deaktivierte User,DC=kauth,DC=local" : referenceUser ? "REFERENCE_USER_OU" : "REVIEW_REQUIRED";
+  const targetOu = lifecycleType === "offboarding" ? "OU=deaktivierte User,DC=kauth,DC=local" : person.directoryTargetOu?.trim() || (referenceUser ? "REFERENCE_USER_OU" : "REVIEW_REQUIRED");
   const actions = lifecycleType === "offboarding"
     ? ["SnapshotAdAccount", "DisableAdUser", "RemoveGroupMemberships", "MoveAdUser", "CreateHelpdeskTicket"]
     : ["CreateAdUser", ...(referenceUser ? ["CopyGroupsFromReference"] : []), ...Array.from(suggestedGroups, (group) => `AddGroup:${group}`), ...computers.map((computer) => `CreateAdComputer:${computer.type}`), "CreateHelpdeskTicket"];
@@ -152,9 +153,11 @@ export function parseRows(rows: unknown[][], filename: string): EmployeeRecord {
   const lookup = (label: string) => normalized.find((row) => row[0]?.toLowerCase().startsWith(label.toLowerCase()))?.[1] ?? "";
   const documentTitle = normalized.find((row) => row.some((cell) => /laufkarte\s+(eintritt|austritt)/i.test(cell)))?.join(" ").toLowerCase() ?? filename.toLowerCase();
   const type: LifecycleType = /laufkarte\s+austritt|offboarding/.test(documentTitle) ? "offboarding" : "onboarding";
-  const firstName = lookup("Vorname") || "Unbekannt";
-  const lastName = lookup("Name") || "Unbekannt";
-  const personnelNumber = lookup("Personal Nummer") || lookup("Personalnummer") || `TEMP-${Date.now().toString().slice(-6)}`;
+  const firstName = lookup("Vorname");
+  const lastName = lookup("Name");
+  const personnelNumber = lookup("Personal Nummer") || lookup("Personalnummer");
+  if (!firstName || !lastName) throw new Error("Vorname oder Nachname konnte nicht erkannt werden.");
+  if (!personnelNumber) throw new Error("Die Personalnummer konnte nicht erkannt werden.");
   const services: ServiceItem[] = [];
   const tasks: TaskItem[] = [];
 
@@ -168,12 +171,18 @@ export function parseRows(rows: unknown[][], filename: string): EmployeeRecord {
         services.push({ id: uid("svc"), key: keyOf(label), label, category: /notebook|rechner|telefon|handy|kleidung/i.test(label) ? "Gerät" : "Anwendung", status: "requested", source: filename });
       }
     });
-    services.forEach((service) => tasks.push({ id: uid("task"), eventType: type, title: `${service.label} bereitstellen`, owner: "IT", executionType: /konto|office|mail|zugang|internet|vpn/i.test(service.label) ? "simulated" : "manual", status: "open" }));
+    services.forEach((service) => {
+      const executionType = /konto|mail|zugang|internet|vpn|wie\s+(?:ma\s*:\s*)?/i.test(service.label) ? "simulated" : "manual";
+      tasks.push({ id: uid("task"), eventType: type, title: `${service.label} bereitstellen`, owner: "IT", executionType, status: executionType === "simulated" ? "ready" : "open" });
+    });
   } else {
     normalized.forEach((row) => {
-      if (row[0] && row[4] && !/beschreibung|verantwortlicher/i.test(row[0])) {
+      const owner = row[4]?.toLowerCase() ?? "";
+      const belongsToIt = /(^|\W)it(\W|$)/i.test(owner) || /habel/i.test(row[0] ?? "");
+      if (row[0] && row[4] && belongsToIt && !/beschreibung|verantwortlicher/i.test(row[0])) {
         const done = row[6]?.toLowerCase() === "x";
-        tasks.push({ id: uid("task"), eventType: type, title: row[0], owner: row[4], executionType: row[4] === "IT" ? "simulated" : "manual", status: done ? "done" : "open", completedAt: done ? isoDate(row[8] || "") : null });
+        const executionType = /benutzerkonto|active directory|ad-benutzer|it-zugänge.*deaktiviert|netzwerkzugang/i.test(row[0]) && /(^|\W)it(\W|$)/i.test(owner) ? "simulated" : "manual";
+        tasks.push({ id: uid("task"), eventType: type, title: row[0], owner: row[4], executionType, status: done ? "done" : executionType === "simulated" ? "ready" : "open", completedAt: done ? isoDate(row[8] || "") : null });
         if (/account|zugang|mail|system|gerät|telefon/i.test(row[0])) services.push({ id: uid("svc"), key: keyOf(row[0]), label: row[0], category: /gerät|telefon/i.test(row[0]) ? "Gerät" : "Anwendung", status: done ? "removed" : "remove", source: filename });
       }
     });

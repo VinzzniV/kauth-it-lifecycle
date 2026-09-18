@@ -8,7 +8,7 @@ const taskSchema = z.object({ id: z.string(), eventType: z.string(), title: z.st
 const eventSchema = z.object({ id: z.string(), type: z.string(), status: z.string(), sourceFilename: z.string(), importedAt: z.string() });
 const employeeSchema = z.object({
   id: z.string(), personnelNumber: z.string().min(1), firstName: z.string(), lastName: z.string(), company: z.string(), department: z.string(), jobTitle: z.string(),
-  status: z.string(), startDate: z.string().nullable().optional(), endDate: z.string().nullable().optional(), services: z.array(serviceSchema), tasks: z.array(taskSchema), events: z.array(eventSchema),
+  status: z.string(), startDate: z.string().nullable().optional(), endDate: z.string().nullable().optional(), directoryTargetOu: z.string().optional(), services: z.array(serviceSchema), tasks: z.array(taskSchema), events: z.array(eventSchema),
 });
 
 function errorMessage(error: unknown) {
@@ -46,9 +46,14 @@ export async function POST(request: Request) {
   try {
     const record = employeeSchema.parse(await request.json());
     const db = getDb();
+    const [known] = await db.select().from(employees).where(eq(employees.personnelNumber, record.personnelNumber)).limit(1);
+    if (known && record.events[0]?.sourceFilename) {
+      const duplicate = await db.select({ id: lifecycleEvents.id }).from(lifecycleEvents).where(and(eq(lifecycleEvents.employeeId, known.id), eq(lifecycleEvents.sourceFilename, record.events[0].sourceFilename))).limit(1);
+      if (duplicate.length) return Response.json({ error: "Diese Laufkarte wurde für den Mitarbeiter bereits eingelesen." }, { status: 409 });
+    }
     await db.insert(employees).values({
       id: record.id, personnelNumber: record.personnelNumber, firstName: record.firstName, lastName: record.lastName, company: record.company,
-      department: record.department, jobTitle: record.jobTitle, status: record.status, startDate: record.startDate, endDate: record.endDate,
+      department: record.department, jobTitle: record.jobTitle, status: record.status, startDate: record.startDate, endDate: record.endDate, directoryTargetOu: record.directoryTargetOu ?? "",
       updatedAt: new Date().toISOString(),
     }).onConflictDoUpdate({ target: employees.personnelNumber, set: {
       firstName: record.firstName, lastName: record.lastName, company: record.company, department: record.department, jobTitle: record.jobTitle,
@@ -73,8 +78,18 @@ export async function POST(request: Request) {
 
 export async function PATCH(request: Request) {
   try {
-    const payload = z.object({ employeeId: z.string(), taskId: z.string(), status: z.enum(["open", "ready", "done"]) }).parse(await request.json());
+    const payload = z.union([
+      z.object({ employeeId: z.string(), taskId: z.string(), status: z.enum(["open", "ready", "done"]) }),
+      z.object({ employeeId: z.string(), directoryTargetOu: z.string().max(1000) }),
+    ]).parse(await request.json());
     const db = getDb();
+    if ("directoryTargetOu" in payload) {
+      const value = payload.directoryTargetOu.trim();
+      if (value && !/^OU=.+,DC=kauth,DC=local$/i.test(value)) return Response.json({ error: "Die Ziel-OU muss ein vollständiger Distinguished Name in kauth.local sein." }, { status: 400 });
+      await db.update(employees).set({ directoryTargetOu: value, updatedAt: new Date().toISOString() }).where(eq(employees.id, payload.employeeId));
+      await db.insert(auditEntries).values({ employeeId: payload.employeeId, action: "AD-Ziel-OU aktualisiert", detail: value || "Automatische Ermittlung" });
+      return Response.json({ ok: true });
+    }
     await db.update(workflowTasks).set({ status: payload.status, completedAt: payload.status === "done" ? new Date().toISOString() : null }).where(and(eq(workflowTasks.id, payload.taskId), eq(workflowTasks.employeeId, payload.employeeId)));
     const remaining = await db.select({ id: workflowTasks.id }).from(workflowTasks).where(and(eq(workflowTasks.employeeId, payload.employeeId), ne(workflowTasks.status, "done"))).limit(1);
     if (!remaining.length) {

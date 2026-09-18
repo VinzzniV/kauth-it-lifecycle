@@ -1,5 +1,8 @@
 import { z } from "zod";
 import { forwardToManagementAgent, readManagementAgentResult } from "../../../lib/management-agent";
+import { getDb } from "../../../db";
+import { automationRuns } from "../../../db/schema";
+import { eq } from "drizzle-orm";
 
 const jobSchema = z.object({
   schemaVersion: z.literal(1), operation: z.literal("execute"), jobId: z.string().min(1), requestedMode: z.enum(["WhatIf", "Execute"]), lifecycleType: z.enum(["onboarding", "change", "offboarding"]),
@@ -12,9 +15,17 @@ const jobSchema = z.object({
 export async function POST(request: Request) {
   try {
     const job = jobSchema.parse(await request.json());
-    await forwardToManagementAgent(job);
+    const db = getDb();
+    const now = new Date().toISOString();
+    await db.insert(automationRuns).values({ id: job.jobId, employeeId: job.person.employeeId, jobId: job.jobId, operation: "execute", mode: job.requestedMode, status: "queued", canRollback: false, startedAt: now, error: "" }).onConflictDoNothing();
+    try {
+      await forwardToManagementAgent(job);
+    } catch (error) {
+      await db.update(automationRuns).set({ status: "failed", completedAt: new Date().toISOString(), error: error instanceof Error ? error.message : "Management-Agent nicht erreichbar" }).where(eq(automationRuns.id, job.jobId));
+      throw error;
+    }
     return Response.json({ ok: true, jobId: job.jobId });
-  } catch (error) { const message = error instanceof Error ? error.message : "Der Auftrag ist ungültig."; return Response.json({ error: message }, { status: message.includes("Management-Agent") ? 503 : 400 }); }
+  } catch (error) { const message = error instanceof Error ? error.message : "Der Auftrag ist ungültig."; return Response.json({ error: message }, { status: error instanceof z.ZodError ? 400 : 503 }); }
 }
 
 export async function GET(request: Request) {
@@ -25,5 +36,5 @@ export async function GET(request: Request) {
     if (response.status === 202 || response.status === 404) return Response.json({ status: "running" }, { status: 202 });
     if (!response.ok) return Response.json({ error: `Ergebnis konnte nicht gelesen werden (${response.status}).` }, { status: 502 });
     return Response.json(await response.json());
-  } catch (error) { const message = error instanceof Error ? error.message : "Ergebnis konnte nicht gelesen werden."; return Response.json({ error: message }, { status: message.includes("Management-Agent") ? 503 : 400 }); }
+  } catch (error) { const message = error instanceof Error ? error.message : "Ergebnis konnte nicht gelesen werden."; return Response.json({ error: message }, { status: 503 }); }
 }
