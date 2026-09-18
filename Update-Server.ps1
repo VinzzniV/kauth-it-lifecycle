@@ -13,7 +13,22 @@ if (-not (Test-Path -LiteralPath (Join-Path $PSScriptRoot '.env'))) {
 
 Push-Location $PSScriptRoot
 try {
-    git pull --ff-only
+    $repositoryUrl = 'https://github.com/VinzzniV/kauth-it-lifecycle.git'
+    $remoteName = $null
+    foreach ($candidate in @(git remote)) {
+        $candidateUrl = git remote get-url $candidate
+        if ($LASTEXITCODE -eq 0 -and $candidateUrl.TrimEnd('/') -eq $repositoryUrl.TrimEnd('/')) {
+            $remoteName = $candidate
+            break
+        }
+    }
+    if (-not $remoteName) {
+        $remoteName = 'github'
+        git remote add $remoteName $repositoryUrl
+        if ($LASTEXITCODE -ne 0) { throw 'Das GitHub-Repository konnte nicht als Update-Quelle eingetragen werden.' }
+    }
+
+    git pull --ff-only $remoteName main
     if ($LASTEXITCODE -ne 0) { throw 'GitHub-Update fehlgeschlagen. Lokale Änderungen oder ein Netzwerkfehler verhindern das Update.' }
 
     docker compose up -d --build

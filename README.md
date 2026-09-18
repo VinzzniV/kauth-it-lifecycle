@@ -40,6 +40,10 @@ Die produktionsnahe lokale Prüfung erfolgt über `docker compose up -d --build`
 Das Repository ist für den privaten Betrieb vorgesehen. Auf dem Server wird es einmal geklont und danach mit folgendem Befehl aktualisiert:
 
 ```powershell
+git clone https://github.com/VinzzniV/kauth-it-lifecycle.git
+cd kauth-it-lifecycle
+Copy-Item .env.example .env
+# .env anschließend mit sicheren lokalen Werten befüllen
 PowerShell -ExecutionPolicy Bypass -File .\Update-Server.ps1
 ```
 
