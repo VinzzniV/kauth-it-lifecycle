@@ -5,11 +5,11 @@ export type ServiceItem = { id: string; key: string; label: string; category: st
 export type TaskItem = { id: string; eventType: LifecycleType; title: string; owner: string; executionType: "manual" | "simulated"; status: "open" | "ready" | "done"; dueDate?: string | null; completedAt?: string | null };
 export type LifecycleEvent = { id: string; type: LifecycleType; status: string; sourceFilename: string; importedAt: string };
 export type AutomationChange = { id: string; action: string; resourceType: string; resourceId: string; relation: string; beforeValue?: string | null; afterValue?: string | null; rollbackAction: string; status: string };
-export type AutomationRun = { id: string; jobId: string; operation: "execute" | "rollback"; mode: "WhatIf" | "Execute"; status: string; relatedRunId?: string | null; canRollback: boolean; startedAt: string; completedAt?: string | null; error?: string; changes: AutomationChange[] };
+export type AutomationRun = { id: string; jobId: string; operation: "execute" | "rollback" | "reference_check"; mode: "WhatIf" | "Execute"; status: string; relatedRunId?: string | null; canRollback: boolean; startedAt: string; completedAt?: string | null; error?: string; changes: AutomationChange[] };
 export type EmployeeRecord = {
   id: string; personnelNumber: string; firstName: string; lastName: string; company: string; department: string;
   jobTitle: string; status: "pending" | "active" | "leaving" | "inactive" | "completed"; startDate?: string | null; endDate?: string | null;
-  directoryTargetOu?: string;
+  directoryTargetOu?: string; directoryReferenceUser?: string; directoryReferenceStatus?: string; directoryReferenceMessage?: string;
   services: ServiceItem[]; tasks: TaskItem[]; events: LifecycleEvent[]; automationRuns?: AutomationRun[];
 };
 
@@ -48,7 +48,7 @@ export type AutomationJob = {
   requestedMode: "WhatIf" | "Execute";
   lifecycleType: LifecycleType;
   person: { employeeId: string; personnelNumber: string; firstName: string; lastName: string; displayName: string; department: string; jobTitle: string; company: string; startDate?: string | null; endDate?: string | null };
-  directory: { domain: "kauth.local"; samAccountName: string; userPrincipalName: string; mail: string; description: string; title: string; targetOu: string; disabledOu: "OU=deaktivierte User,DC=kauth,DC=local"; suggestedGroups: string[]; referenceUser: { displayName: string; givenNameInitial: string; surname: string } | null; computers: Array<{ type: "Notebook" | "Workstation"; prefix: string; targetOu: string; description: string }> };
+  directory: { domain: "kauth.local"; samAccountName: string; userPrincipalName: string; mail: string; description: string; title: string; targetOu: string; disabledOu: "OU=deaktivierte User,DC=kauth,DC=local"; suggestedGroups: string[]; referenceUser: { displayName: string; query: string; givenNameInitial: string; surname: string } | null; computers: Array<{ type: "Notebook" | "Workstation"; prefix: string; targetOu: string; description: string }> };
   helpdesk: { baseUrl: "http://pk-srvhlpdsk001:8002"; subject: string; text: string };
   automationTaskIds: string[];
   actions: Array<{ type: string; target: string; requiresApproval: true }>;
@@ -59,7 +59,7 @@ const uid = (prefix: string) => `${prefix}-${Math.random().toString(36).slice(2,
 export const demoEmployees: EmployeeRecord[] = [
   {
     id: "emp-1022", personnelNumber: "1022", firstName: "Chiara", lastName: "Luger", company: "Paul Kauth GmbH & Co. KG - 78588 Denkingen",
-    department: "913610 Personalwesen", jobTitle: "Personal-Referentin", status: "pending", startDate: "2026-10-01",
+    department: "Personalwesen", jobTitle: "Personal-Referentin", status: "pending", startDate: "2026-10-01",
     services: ["Notebook", "Internetzugang", "Microsoft Office", "E-Mail-Adresse", "Oder wie MA: L. Romankewicz", "Habel"].map((label, index) => ({ id: `svc-c-${index}`, key: label.toLowerCase().replaceAll(" ", "-"), label, category: index === 0 ? "Gerät" : "Anwendung", status: index < 4 ? "approved" : "requested", source: "Eintritt Laufkarte", details: label === "Habel" ? "Ausnahme: Verantwortlichkeit CO, für IT trotzdem relevant" : "" })),
     tasks: [
       { id: "task-c-1", eventType: "onboarding", title: "Benutzerkonto anlegen", owner: "IT", executionType: "simulated", status: "ready", dueDate: "2026-09-25" },
@@ -109,11 +109,9 @@ export function buildAutomationJob(person: EmployeeRecord): AutomationJob {
     suggestedGroups.add("Denkingen_Alle_Benutzer_GG");
     suggestedGroups.add("Denkingen_MailSignatur_KauthDenkingen_GG");
   }
-  const referenceLabel = person.services.find((service) => /\bwie\b/i.test(service.label))?.label ?? "";
-  const referenceMatch = referenceLabel.match(/\bwie\b\s*(?:MA\s*:\s*)?(.+)/i);
-  const referenceName = referenceMatch?.[1]?.trim() ?? "";
+  const referenceName = getReferenceUserName(person);
   const referenceParts = referenceName.split(/\s+/).filter(Boolean);
-  const referenceUser = referenceParts.length >= 2 ? { displayName: referenceName, givenNameInitial: referenceParts[0].replace(/\.$/, "").slice(0, 1).toUpperCase(), surname: referenceParts.at(-1) ?? "" } : null;
+  const referenceUser = referenceName ? { displayName: referenceName, query: referenceName, givenNameInitial: referenceParts[0]?.replace(/\.$/, "").slice(0, 1).toUpperCase() ?? "", surname: referenceParts.at(-1) ?? "" } : null;
   const locationText = `${person.company} ${person.department}`.toLowerCase();
   const locations = [
     { name: "Denkingen", token: "denkingen", code: "PK", base: "OU=Clients,OU=_Ressourcen,OU=Denkingen,DC=kauth,DC=local" },
@@ -190,12 +188,27 @@ export function parseRows(rows: unknown[][], filename: string): EmployeeRecord {
 
   return {
     id: `emp-${personnelNumber}`, personnelNumber, firstName, lastName, company: lookup("Unternehmen"),
-    department: lookup("Abteilung Name") || lookup("Abteilung"), jobTitle: lookup("Stellenbezeichnung") || lookup("Position") || lookup("Tätigkeit"),
+    department: cleanDepartment(lookup("Abteilung Name") || lookup("Abteilung")), jobTitle: lookup("Stellenbezeichnung") || lookup("Position") || lookup("Tätigkeit"),
+    directoryReferenceUser: referenceNameFromServices(services), directoryReferenceStatus: referenceNameFromServices(services) ? "pending" : "",
     status: type === "offboarding" ? "leaving" : "pending", startDate: isoDate(lookup("Eintritt")),
     endDate: type === "offboarding" ? isoDate(lookup("Austritt") || lookup("Letzter Arbeitstag")) : null,
     services, tasks,
     events: [{ id: uid("evt"), type, status: "in_review", sourceFilename: filename, importedAt: new Date().toISOString() }],
   };
+}
+
+function cleanDepartment(value: string) {
+  return value.replace(/^\s*\d{3,}\s*(?:[-/:]\s*)?/, "").trim();
+}
+
+export function getReferenceUserName(person: EmployeeRecord) {
+  if (person.directoryReferenceUser?.trim()) return person.directoryReferenceUser.trim();
+  return referenceNameFromServices(person.services);
+}
+
+function referenceNameFromServices(services: ServiceItem[]) {
+  const referenceLabel = services.find((service) => /\bwie\b/i.test(service.label))?.label ?? "";
+  return referenceLabel.match(/\bwie\b\s*(?:MA\s*:\s*)?(.+)/i)?.[1]?.trim() ?? "";
 }
 
 export function buildPowerShellPreview(person: EmployeeRecord) {
@@ -250,9 +263,13 @@ Write-Host 'Offboarding-Skript abgeschlossen.'`;
   }
   const groupLines = job.directory.suggestedGroups.map((group) => `Add-ADGroupMember -Identity '${q(group)}' -Members $SamAccountName @AdConnection -WhatIf:$WhatIfMode`).join("\n");
   const referenceLookup = job.directory.referenceUser ? `
-# Referenzbenutzer eindeutig auflösen. Dessen OU und direkte Gruppen werden übernommen.
-$ReferenceUsers = @(Get-ADUser -Filter "Surname -eq '${q(job.directory.referenceUser.surname)}' -and GivenName -like '${q(job.directory.referenceUser.givenNameInitial)}*'" -Properties MemberOf,DistinguishedName @AdConnection)
-if ($ReferenceUsers.Count -ne 1) { throw 'Referenzbenutzer ist nicht eindeutig.' }
+# Referenzbenutzer zuerst exakt und danach über Nachname/Initiale auflösen.
+$ReferenceQuery = '${q(job.directory.referenceUser.query)}'
+$ReferenceUsers = @(Get-ADUser -Filter "SamAccountName -eq '$ReferenceQuery' -or UserPrincipalName -eq '$ReferenceQuery' -or DisplayName -eq '$ReferenceQuery'" -Properties MemberOf,DistinguishedName @AdConnection)
+if ($ReferenceUsers.Count -eq 0) {
+    $ReferenceUsers = @(Get-ADUser -Filter "Surname -eq '${q(job.directory.referenceUser.surname)}' -and GivenName -like '${q(job.directory.referenceUser.givenNameInitial)}*'" -Properties MemberOf,DistinguishedName @AdConnection)
+}
+if ($ReferenceUsers.Count -ne 1) { throw "Referenzbenutzer ist nicht eindeutig. Treffer: $($ReferenceUsers.Count)" }
 $ReferenceUser = $ReferenceUsers[0]
 $TargetOu = $ReferenceUser.DistinguishedName -replace '^CN=(?:\\.|[^,])+,', ''` : `
 $ReferenceUser = $null

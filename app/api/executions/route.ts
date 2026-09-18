@@ -10,16 +10,20 @@ const changeSchema = z.object({
   beforeValue: z.unknown().optional(), afterValue: z.unknown().optional(), rollbackAction: z.string().default("manual"), status: z.string().default("completed"),
 });
 const resultSchema = z.object({
-  schemaVersion: z.literal(1), runId: z.string(), jobId: z.string(), employeeId: z.string(), operation: z.enum(["execute", "rollback"]),
+  schemaVersion: z.literal(1), runId: z.string(), jobId: z.string(), employeeId: z.string(), operation: z.enum(["execute", "rollback", "reference_check"]),
   mode: z.enum(["WhatIf", "Execute"]), status: z.enum(["completed", "partial", "failed"]), relatedRunId: z.string().nullable().optional(),
   startedAt: z.string(), completedAt: z.string(), error: z.string().optional(), automationTaskIds: z.array(z.string()).default([]), changes: z.array(changeSchema).default([]),
+  referenceLookup: z.object({ query: z.string(), status: z.enum(["found", "not_found", "ambiguous"]), count: z.number(), samAccountName: z.string().optional(), displayName: z.string().optional(), distinguishedName: z.string().optional(), targetOu: z.string().optional() }).nullable().optional(),
 });
 const jsonValue = (value: unknown) => value === undefined ? null : JSON.stringify(value);
 
 export async function POST(request: Request) {
   try {
     const runtime = env as unknown as Record<string, string | undefined>;
-    const sameOrigin = request.headers.get("origin") === new URL(request.url).origin;
+    const requestUrl = new URL(request.url);
+    const origin = request.headers.get("origin");
+    const forwardedHost = request.headers.get("x-forwarded-host") ?? request.headers.get("host");
+    const sameOrigin = request.headers.get("sec-fetch-site") === "same-origin" || origin === requestUrl.origin || (!!origin && !!forwardedHost && new URL(origin).host === forwardedHost);
     if (runtime.MANAGEMENT_AGENT_TOKEN && !sameOrigin && request.headers.get("authorization") !== `Bearer ${runtime.MANAGEMENT_AGENT_TOKEN}`) return Response.json({ error: "Nicht autorisiert." }, { status: 401 });
     const result = resultSchema.parse(await request.json());
     const db = getDb();
@@ -35,6 +39,21 @@ export async function POST(request: Request) {
         resourceId: change.resourceId, relation: change.relation, beforeValue: jsonValue(change.beforeValue), afterValue: jsonValue(change.afterValue),
         rollbackAction: change.rollbackAction, status: change.status,
       })));
+    }
+    if (result.operation === "reference_check" && result.referenceLookup) {
+      const lookup = result.referenceLookup;
+      const message = lookup.status === "found"
+        ? `${lookup.displayName ?? lookup.samAccountName ?? lookup.query} gefunden`
+        : lookup.status === "ambiguous" ? `${lookup.count} passende Benutzer gefunden` : "Referenzbenutzer nicht gefunden";
+      await db.update(employees).set({
+        directoryReferenceUser: lookup.samAccountName ?? lookup.query,
+        directoryReferenceStatus: lookup.status,
+        directoryReferenceMessage: message,
+        directoryTargetOu: lookup.status === "found" ? lookup.targetOu ?? "" : "",
+        updatedAt: result.completedAt,
+      }).where(eq(employees.id, result.employeeId));
+      await db.insert(auditEntries).values({ employeeId: result.employeeId, action: "Referenzbenutzer geprüft", detail: `${lookup.query}: ${message}` });
+      return Response.json({ ok: true });
     }
     if (result.operation === "rollback" && result.relatedRunId && result.status === "completed") {
       await db.update(automationRuns).set({ canRollback: false, status: "rolled_back" }).where(eq(automationRuns.id, result.relatedRunId));

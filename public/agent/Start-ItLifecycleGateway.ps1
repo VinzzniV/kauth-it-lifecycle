@@ -59,7 +59,7 @@ try {
             $reader = [IO.StreamReader]::new($context.Request.InputStream, $context.Request.ContentEncoding)
             $raw = $reader.ReadToEnd()
             $job = $raw | ConvertFrom-Json
-            if ($job.schemaVersion -ne 1 -or $job.requestedMode -notin @('WhatIf', 'Execute') -or $job.directory.domain -ne 'kauth.local' -or $job.operation -notin @('execute', 'rollback')) {
+            if ($job.schemaVersion -ne 1 -or $job.requestedMode -notin @('WhatIf', 'Execute') -or $job.directory.domain -ne 'kauth.local' -or $job.operation -notin @('execute', 'rollback', 'reference_check')) {
                 $context.Response.StatusCode = 400
                 continue
             }

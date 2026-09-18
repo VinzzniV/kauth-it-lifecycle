@@ -9,6 +9,7 @@ Interne Anwendung für das Einlesen von HR-Laufkarten, die Bearbeitung manueller
 - Dauerhafte Mitarbeiterakte mit Aufgaben, Systemen und Ereignissen
 - Active-Directory-Vorschau mit expliziter Ziel-OU
 - Referenzbenutzer für die Übernahme direkter Gruppenmitgliedschaften
+- Automatische AD-Prüfung des Referenzbenutzers mit gespeicherter Ziel-OU und manueller Wiederholungsprüfung
 - Automatische AD-Computerplanung nach Standort und Gerätetyp
 - WhatIf, echte Ausführung, Ergebnisprotokoll und gezielter Rollback
 - Docker-Betrieb mit lokaler Datenbank, persistentem Volume und Zugriffsschutz
@@ -33,6 +34,16 @@ npm run dev
 ```
 
 Die produktionsnahe lokale Prüfung erfolgt über `docker compose up -d --build`.
+
+## Installation und Updates über GitHub
+
+Das Repository ist für den privaten Betrieb vorgesehen. Auf dem Server wird es einmal geklont und danach mit folgendem Befehl aktualisiert:
+
+```powershell
+PowerShell -ExecutionPolicy Bypass -File .\Update-Server.ps1
+```
+
+Das Update lädt ausschließlich freigegebene Änderungen, baut das Docker-Image neu und startet den Container. Die nicht versionierte `.env` und das Datenbank-Volume bleiben bestehen.
 
 ## Sicherheit
 

@@ -14,7 +14,7 @@ $job = Get-Content -LiteralPath $resolvedJobPath -Raw -Encoding UTF8 | ConvertFr
 if ($job.schemaVersion -ne 1) { throw 'Unsupported job schema. Expected schemaVersion 1.' }
 if ($Mode -eq 'Job') { $Mode = if ($job.requestedMode -eq 'Execute') { 'Execute' } else { 'WhatIf' } }
 $operation = if ($job.PSObject.Properties['operation']) { [string]$job.operation } else { 'execute' }
-if ($operation -notin @('execute', 'rollback')) { throw "Unsupported operation: $operation" }
+if ($operation -notin @('execute', 'rollback', 'reference_check')) { throw "Unsupported operation: $operation" }
 if ($job.directory.domain -ne 'kauth.local') { throw 'This pilot accepts only the kauth.local domain.' }
 
 $script:RunLog = [System.Collections.Generic.List[object]]::new()
@@ -23,6 +23,7 @@ $startedAt = Get-Date
 $runId = if ($job.PSObject.Properties['runId']) { [string]$job.runId } else { [string]$job.jobId }
 $runStatus = 'completed'
 $runError = ''
+$referenceLookup = $null
 
 function Add-RunLog {
     param([string]$Action, [string]$State, [string]$Message)
@@ -47,6 +48,22 @@ function Invoke-ApprovedAction {
 
 function Get-ParentDn { param([string]$DistinguishedName); return $DistinguishedName -replace '^[A-Z]{2}=(?:\\.|[^,])+,', '' }
 function Read-StoredValue { param($Value); if ($null -eq $Value -or $Value -eq '') { return $null }; try { return ($Value | ConvertFrom-Json) } catch { return $Value } }
+function Find-ReferenceUsers {
+    param($ReferenceSpec, [hashtable]$AdArguments)
+    $query = ([string]$ReferenceSpec.query).Trim()
+    if (-not $query) { $query = ([string]$ReferenceSpec.displayName).Trim() }
+    $escapedQuery = $query.Replace("'", "''")
+    $matches = @(Get-ADUser -Filter "SamAccountName -eq '$escapedQuery' -or UserPrincipalName -eq '$escapedQuery' -or DisplayName -eq '$escapedQuery'" @AdArguments -Properties MemberOf,DistinguishedName,SamAccountName,DisplayName)
+    if ($matches.Count -gt 0) { return $matches }
+
+    $parts = @($query -split '\s+' | Where-Object { $_ })
+    $surname = if ($ReferenceSpec.PSObject.Properties['surname'] -and $ReferenceSpec.surname) { [string]$ReferenceSpec.surname } elseif ($parts.Count -ge 2) { [string]$parts[-1] } else { '' }
+    $initial = if ($ReferenceSpec.PSObject.Properties['givenNameInitial'] -and $ReferenceSpec.givenNameInitial) { [string]$ReferenceSpec.givenNameInitial } elseif ($parts.Count -ge 2) { ([string]$parts[0]).TrimEnd('.').Substring(0, 1) } else { '' }
+    if (-not $surname -or -not $initial) { return @() }
+    $escapedSurname = $surname.Replace("'", "''")
+    $escapedInitial = $initial.Replace("'", "''")
+    return @(Get-ADUser -Filter "Surname -eq '$escapedSurname' -and GivenName -like '$escapedInitial*'" @AdArguments -Properties MemberOf,DistinguishedName,SamAccountName,DisplayName)
+}
 
 Write-Host "IT Lifecycle agent - $operation / $Mode" -ForegroundColor Cyan
 Write-Host "Job: $($job.jobId)"
@@ -59,7 +76,23 @@ try {
     $adArgs = @{ Server = $job.directory.domain; Credential = $adCredential; ErrorAction = 'Stop' }
     Add-RunLog 'ValidateAdConnection' 'completed' $job.directory.domain
 
-    if ($operation -eq 'rollback') {
+    if ($operation -eq 'reference_check') {
+        $query = [string]$job.directory.referenceUser.query
+        $referenceUsers = @(Find-ReferenceUsers $job.directory.referenceUser $adArgs)
+        if ($referenceUsers.Count -eq 1) {
+            $matchedUser = $referenceUsers[0]
+            $referenceLookup = [pscustomobject]@{
+                query = $query; status = 'found'; count = 1; samAccountName = [string]$matchedUser.SamAccountName
+                displayName = [string]$matchedUser.DisplayName; distinguishedName = [string]$matchedUser.DistinguishedName
+                targetOu = Get-ParentDn $matchedUser.DistinguishedName
+            }
+            Add-RunLog 'Reference user lookup' 'completed' "$($matchedUser.SamAccountName): $($referenceLookup.targetOu)"
+        } else {
+            $lookupStatus = if ($referenceUsers.Count -eq 0) { 'not_found' } else { 'ambiguous' }
+            $referenceLookup = [pscustomobject]@{ query = $query; status = $lookupStatus; count = $referenceUsers.Count }
+            Add-RunLog 'Reference user lookup' $lookupStatus "$query; matches=$($referenceUsers.Count)"
+        }
+    } elseif ($operation -eq 'rollback') {
         $rollbackChanges = @($job.originalRun.changes)
         [array]::Reverse($rollbackChanges)
         foreach ($change in $rollbackChanges) {
@@ -100,9 +133,7 @@ try {
         $referenceUser = $null
         $resolvedTargetOu = [string]$job.directory.targetOu
         if ($job.directory.referenceUser) {
-            $surname = ([string]$job.directory.referenceUser.surname).Replace("'", "''")
-            $initial = ([string]$job.directory.referenceUser.givenNameInitial).Replace("'", "''")
-            $referenceUsers = @(Get-ADUser -Filter "Surname -eq '$surname' -and GivenName -like '$initial*'" @adArgs -Properties MemberOf,DistinguishedName,SamAccountName)
+            $referenceUsers = @(Find-ReferenceUsers $job.directory.referenceUser $adArgs)
             if ($referenceUsers.Count -ne 1) { throw "Reference user '$($job.directory.referenceUser.displayName)' is not unique. Found: $($referenceUsers.Count)." }
             $referenceUser = $referenceUsers[0]
             if ($resolvedTargetOu -eq 'REFERENCE_USER_OU') { $resolvedTargetOu = Get-ParentDn $referenceUser.DistinguishedName }
@@ -206,6 +237,7 @@ try {
         operation = $operation; mode = $Mode; status = $runStatus; relatedRunId = if ($operation -eq 'rollback') { [string]$job.originalRun.id } else { $null }
         startedAt = $startedAt.ToString('o'); completedAt = $completedAt.ToString('o'); error = $runError
         automationTaskIds = if ($job.PSObject.Properties['automationTaskIds']) { @($job.automationTaskIds) } else { @() }; changes = $script:Changes; log = $script:RunLog
+        referenceLookup = $referenceLookup
         computerName = $env:COMPUTERNAME; operator = [Security.Principal.WindowsIdentity]::GetCurrent().Name
     }
     $resultPath = [IO.Path]::ChangeExtension($resolvedJobPath, '.result.json')

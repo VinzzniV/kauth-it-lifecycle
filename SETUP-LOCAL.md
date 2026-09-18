@@ -39,7 +39,10 @@ Für einen sauberen Integrationstest empfiehlt sich `Start-Local.ps1`, weil dort
 - Status: `docker compose ps`
 - Protokoll: `docker compose logs -f it-lifecycle`
 - Neustart: `docker compose restart`
-- Update nach Änderungen: `docker compose up -d --build`
+- Update aus GitHub: `PowerShell -ExecutionPolicy Bypass -File .\Update-Server.ps1`
+- Update ohne Git: `docker compose up -d --build`
 - Sicherung: Docker-Volume `kauth_it_lifecycle_data` sichern.
 
 `.env` enthält lokale Geheimnisse und darf nicht ins Git-Repository übernommen werden.
+
+Wenn der Windows-Agent auf demselben Server läuft, müssen nach einem Update auch die aktuellen Dateien aus `public\agent` verwendet werden. Ein bereits geöffnetes Gateway-Fenster anschließend schließen und mit `Start-ItLifecycleGateway.ps1` neu starten.

@@ -4,13 +4,20 @@ import { getDb } from "../../../db";
 import { automationRuns } from "../../../db/schema";
 import { eq } from "drizzle-orm";
 
-const jobSchema = z.object({
-  schemaVersion: z.literal(1), operation: z.literal("execute"), jobId: z.string().min(1), requestedMode: z.enum(["WhatIf", "Execute"]), lifecycleType: z.enum(["onboarding", "change", "offboarding"]),
-  person: z.object({ employeeId: z.string(), displayName: z.string(), personnelNumber: z.string() }).passthrough(),
-  directory: z.object({ domain: z.literal("kauth.local"), samAccountName: z.string(), targetOu: z.string() }).passthrough(),
-  helpdesk: z.object({ baseUrl: z.string(), subject: z.string(), text: z.string() }),
-  actions: z.array(z.object({ type: z.string(), target: z.string(), requiresApproval: z.literal(true) })),
-}).passthrough();
+const jobSchema = z.discriminatedUnion("operation", [
+  z.object({
+    schemaVersion: z.literal(1), operation: z.literal("execute"), jobId: z.string().min(1), requestedMode: z.enum(["WhatIf", "Execute"]), lifecycleType: z.enum(["onboarding", "change", "offboarding"]),
+    person: z.object({ employeeId: z.string(), displayName: z.string(), personnelNumber: z.string() }).passthrough(),
+    directory: z.object({ domain: z.literal("kauth.local"), samAccountName: z.string(), targetOu: z.string() }).passthrough(),
+    helpdesk: z.object({ baseUrl: z.string(), subject: z.string(), text: z.string() }),
+    actions: z.array(z.object({ type: z.string(), target: z.string(), requiresApproval: z.literal(true) })),
+  }).passthrough(),
+  z.object({
+    schemaVersion: z.literal(1), operation: z.literal("reference_check"), jobId: z.string().min(1), requestedMode: z.literal("WhatIf"),
+    person: z.object({ employeeId: z.string(), displayName: z.string(), personnelNumber: z.string() }).passthrough(),
+    directory: z.object({ domain: z.literal("kauth.local"), referenceUser: z.object({ query: z.string(), displayName: z.string() }) }).passthrough(),
+  }).passthrough(),
+]);
 
 export async function POST(request: Request) {
   try {
