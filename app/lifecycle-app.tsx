@@ -81,6 +81,12 @@ export type AppView =
 type ApiMessage = { error?: string; id?: string; jobId?: string };
 type EmployeeListResponse = ApiMessage & { employees?: EmployeeRecord[] };
 type AdCredential = { username: string; password: string };
+type ExecutionLogEntry = {
+  time: string;
+  action: string;
+  state: string;
+  message: string;
+};
 type ImmediateExecutionResult = {
   runId?: string;
   jobId?: string;
@@ -89,6 +95,14 @@ type ImmediateExecutionResult = {
   status?: string;
   error?: string;
   changes: AutomationChange[];
+  log?: ExecutionLogEntry[];
+};
+type RunningExecutionProgress = {
+  status: "running";
+  startedAt?: string;
+  updatedAt?: string;
+  currentAction?: string;
+  log?: ExecutionLogEntry[];
 };
 const viewMeta: Record<AppView, { title: string; eyebrow: string }> = {
   overview: { title: "Lifecycle-Übersicht", eyebrow: "Heute" },
@@ -115,6 +129,28 @@ const statusText: Record<string, string> = {
   failed: "Fehlgeschlagen",
   rolled_back: "Zurückgenommen",
 };
+const executionActionText: Record<string, string> = {
+  CreateAdUser: "AD-Benutzer anlegen",
+  CopyGroupsFromReference: "Gruppen des Referenzbenutzers kopieren",
+  SnapshotAdAccount: "AD-Konto erfassen",
+  DisableAdUser: "AD-Benutzer deaktivieren",
+  RemoveGroupMemberships: "Gruppenmitgliedschaften entfernen",
+  MoveAdUser: "AD-Benutzer verschieben",
+  CreateHelpdeskTicket: "HelpDesk-Ticket erstellen",
+  "AD-Verbindung pruefen": "AD-Verbindung prüfen",
+  "Vorbedingungen pruefen": "Vorbedingungen prüfen",
+  "Referenzbenutzer suchen": "Referenzbenutzer suchen",
+  "Run failed": "Ausführung fehlgeschlagen",
+};
+function executionActionLabel(action: string) {
+  if (action.startsWith("AddGroup:"))
+    return `AD-Gruppe hinzufügen: ${action.slice(9)}`;
+  if (action.startsWith("CreateAdComputer:"))
+    return `${action.slice(17)} im AD anlegen`;
+  if (action.startsWith("ReuseAdComputer:"))
+    return `${action.slice(16)} übernehmen`;
+  return executionActionText[action] ?? action;
+}
 const kindText: Record<MasterDataKind, string> = {
   group: "Gruppen",
   application: "Anwendungen",
@@ -162,17 +198,24 @@ async function collectExecutionResult(
   onComplete: () => void,
   onResult?: (result: ImmediateExecutionResult) => void,
   onProgress?: (message: string) => void,
+  onLiveProgress?: (progress: RunningExecutionProgress) => void,
 ) {
   for (let attempt = 0; attempt < 150; attempt += 1) {
     const response = await fetch(
       `/api/agent?jobId=${encodeURIComponent(jobId)}`,
     );
     if (response.status === 202) {
-      if (attempt > 0 && attempt % 5 === 0) {
-        onProgress?.(
-          `Der Auftrag läuft auf dem Jobserver seit mindestens ${attempt * 2} Sekunden. Ergebnis wird weiter abgerufen …`,
-        );
-      }
+      const progress = (await response.json().catch(() => ({
+        status: "running",
+      }))) as RunningExecutionProgress;
+      onLiveProgress?.(progress);
+      const currentAction =
+        progress.currentAction ?? progress.log?.at(-1)?.action;
+      onProgress?.(
+        currentAction
+          ? `Läuft: ${executionActionLabel(currentAction)}`
+          : `Der Auftrag läuft auf dem Jobserver seit mindestens ${attempt * 2} Sekunden …`,
+      );
       await new Promise((resolve) => window.setTimeout(resolve, 2000));
       continue;
     }
@@ -834,26 +877,41 @@ function AdCredentialDialog({
   setOpen,
   title,
   onSubmit,
+  requireInitialPassword = false,
 }: {
   open: boolean;
   setOpen: (value: boolean) => void;
   title: string;
-  onSubmit: (credential: AdCredential) => void;
+  onSubmit: (credential: AdCredential, initialPassword?: string) => void;
+  requireInitialPassword?: boolean;
 }) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  const [initialPassword, setInitialPassword] = useState("");
   function submit(event: FormEvent) {
     event.preventDefault();
-    if (!username.trim() || !password) return;
-    onSubmit({ username: username.trim(), password });
+    if (
+      !username.trim() ||
+      !password ||
+      (requireInitialPassword && !initialPassword)
+    )
+      return;
+    onSubmit(
+      { username: username.trim(), password },
+      requireInitialPassword ? initialPassword : undefined,
+    );
     setPassword("");
+    setInitialPassword("");
     setOpen(false);
   }
   return (
     <Dialog
       open={open}
       onOpenChange={(next) => {
-        if (!next) setPassword("");
+        if (!next) {
+          setPassword("");
+          setInitialPassword("");
+        }
         setOpen(next);
       }}
     >
@@ -883,6 +941,28 @@ function AdCredentialDialog({
                 autoFocus
               />
             </div>
+            {requireInitialPassword && (
+              <div className="rounded-xl border border-[#dce3e7] bg-[#f8fafb] p-4">
+                <label
+                  className="mb-1.5 block text-sm font-medium"
+                  htmlFor="initial-user-password"
+                >
+                  Initiales Kennwort für den Mitarbeiter
+                </label>
+                <Input
+                  id="initial-user-password"
+                  type="password"
+                  autoComplete="new-password"
+                  value={initialPassword}
+                  onChange={(event) => setInitialPassword(event.target.value)}
+                />
+                <p className="mt-2 text-xs leading-5 text-[#71808c]">
+                  Damit wird das Konto aktiviert. Der Mitarbeiter muss das
+                  Kennwort bei der ersten Anmeldung ändern. Das Kennwort wird
+                  nicht gespeichert.
+                </p>
+              </div>
+            )}
             <div>
               <label
                 className="mb-1.5 block text-sm font-medium"
@@ -917,7 +997,11 @@ function AdCredentialDialog({
             </Button>
             <Button
               type="submit"
-              disabled={!username.trim() || !password}
+              disabled={
+                !username.trim() ||
+                !password ||
+                (requireInitialPassword && !initialPassword)
+              }
               className="bg-[#176b87] text-white hover:bg-[#12566d]"
             >
               Auftrag starten
@@ -946,6 +1030,8 @@ function AutomationsView({
   const [latestExecution, setLatestExecution] =
     useState<ImmediateExecutionResult | null>(null);
   const [running, setRunning] = useState(false);
+  const [liveProgress, setLiveProgress] =
+    useState<RunningExecutionProgress | null>(null);
   const [targetOu, setTargetOu] = useState(active?.directoryTargetOu ?? "");
   const [referenceUser, setReferenceUser] = useState(
     active ? getReferenceUserName(active) : "",
@@ -995,6 +1081,7 @@ function AutomationsView({
   async function requestRun(
     mode: "WhatIf" | "Execute",
     adCredential: AdCredential,
+    initialPassword?: string,
   ) {
     if (!job) return;
     if (invalidExistingComputer) {
@@ -1012,11 +1099,17 @@ function AutomationsView({
     setRunning(true);
     setResult("");
     setLatestExecution(null);
+    setLiveProgress(null);
     try {
       const response = await fetch("/api/agent", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ ...job, requestedMode: mode, adCredential }),
+        body: JSON.stringify({
+          ...job,
+          requestedMode: mode,
+          adCredential,
+          ...(initialPassword ? { initialPassword } : {}),
+        }),
       });
       const data = (await response.json()) as ApiMessage;
       if (!response.ok)
@@ -1032,6 +1125,7 @@ function AutomationsView({
             onRefresh,
             setLatestExecution,
             setResult,
+            setLiveProgress,
           ),
         );
       }
@@ -1039,6 +1133,7 @@ function AutomationsView({
       setResult("Management-Agent nicht erreichbar.");
     } finally {
       setRunning(false);
+      setLiveProgress(null);
     }
   }
   async function checkReference(adCredential: AdCredential) {
@@ -1077,9 +1172,12 @@ function AutomationsView({
     setCredentialAction(action);
     setCredentialOpen(true);
   }
-  function submitCredentials(credential: AdCredential) {
+  function submitCredentials(
+    credential: AdCredential,
+    initialPassword?: string,
+  ) {
     if (credentialAction === "reference") void checkReference(credential);
-    else void requestRun(credentialAction, credential);
+    else void requestRun(credentialAction, credential, initialPassword);
   }
   function selectEmployee(person: EmployeeRecord) {
     setComputerAssignments({});
@@ -1087,6 +1185,7 @@ function AutomationsView({
     setReferenceUser(getReferenceUserName(person));
     setResult("");
     setLatestExecution(null);
+    setLiveProgress(null);
     setActive(person);
   }
   return (
@@ -1100,6 +1199,11 @@ function AutomationsView({
             : credentialAction === "WhatIf"
               ? "AD-Testlauf starten"
               : "AD-Automation ausführen"
+        }
+        requireInitialPassword={
+          credentialAction === "Execute" &&
+          job?.lifecycleType !== "offboarding" &&
+          Boolean(job?.actions.some((action) => action.type === "CreateAdUser"))
         }
         onSubmit={submitCredentials}
       />
@@ -1427,6 +1531,29 @@ function AutomationsView({
                 {result}
               </div>
             )}
+            {running && liveProgress && (
+              <div className="mt-4 rounded-xl border border-sky-200 bg-sky-50/60 p-4">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <p className="font-medium text-sky-950">
+                      Live-Status des Management-Agenten
+                    </p>
+                    <p className="mt-1 text-sm text-sky-800">
+                      {liveProgress.currentAction
+                        ? executionActionLabel(liveProgress.currentAction)
+                        : "Auftrag wird bearbeitet"}
+                    </p>
+                  </div>
+                  <Badge
+                    variant="outline"
+                    className="border-sky-200 bg-white text-sky-700"
+                  >
+                    Läuft
+                  </Badge>
+                </div>
+                <ExecutionLog entries={liveProgress.log ?? []} />
+              </div>
+            )}
             {latestExecution &&
               latestExecution.operation !== "reference_check" && (
                 <div className="mt-4 rounded-xl border border-[#dce3e7] bg-[#f8fafb] p-4">
@@ -1460,11 +1587,58 @@ function AutomationsView({
                   <div className="mt-4">
                     <ChangeList changes={latestExecution.changes} />
                   </div>
+                  <ExecutionLog entries={latestExecution.log ?? []} />
                 </div>
               )}
           </Card>
         </div>
       )}
+    </div>
+  );
+}
+
+function ExecutionLog({ entries }: { entries: ExecutionLogEntry[] }) {
+  if (!entries.length) return null;
+  const stateLabel: Record<string, string> = {
+    running: "Läuft",
+    completed: "Erledigt",
+    simulated: "Testlauf",
+    skipped: "Übersprungen",
+    failed: "Fehler",
+    found: "Gefunden",
+    not_found: "Nicht gefunden",
+    ambiguous: "Mehrdeutig",
+  };
+  return (
+    <div className="mt-4 overflow-hidden rounded-lg border border-[#dce3e7] bg-white">
+      <div className="border-b border-[#e5eaed] px-3 py-2 text-sm font-medium">
+        Ablaufprotokoll
+      </div>
+      <div className="max-h-72 divide-y overflow-y-auto">
+        {entries.map((entry, index) => (
+          <div
+            key={`${entry.time}-${entry.action}-${index}`}
+            className="grid gap-1 px-3 py-2.5 text-sm sm:grid-cols-[5rem_minmax(9rem,.7fr)_minmax(0,1fr)]"
+          >
+            <span className="text-xs text-[#71808c]">
+              {entry.time
+                ? new Intl.DateTimeFormat("de-DE", {
+                    hour: "2-digit",
+                    minute: "2-digit",
+                    second: "2-digit",
+                  }).format(new Date(entry.time))
+                : "—"}
+            </span>
+            <span className="font-medium">
+              {executionActionLabel(entry.action)}
+              <span className="ml-2 text-xs font-normal text-[#71808c]">
+                {stateLabel[entry.state] ?? entry.state}
+              </span>
+            </span>
+            <span className="break-words text-[#52626e]">{entry.message}</span>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

@@ -867,7 +867,7 @@ if ($WhatIfMode) {
     Write-Host $TicketText
 } elseif ($PSCmdlet.ShouldProcess('${q(job.helpdesk.baseUrl)}', 'HelpDesk-Ticket erstellen')) {
     $Body = @{ text = $TicketText; htmlContent = $false; ticketFields = @{ subject = '${q(job.helpdesk.subject)}' }; actionArguments = @{} } | ConvertTo-Json -Depth 8
-    Invoke-RestMethod -Uri '${q(job.helpdesk.baseUrl)}/api/ticket/create' -Method Post -ContentType 'application/json; charset=utf-8' -Body $Body -TimeoutSec 60
+    Invoke-RestMethod -Uri '${q(job.helpdesk.baseUrl)}/api/ticket/create' -Method Post -Credential $Credential -ContentType 'application/json; charset=utf-8' -Body $Body -TimeoutSec 60
 }`;
 
   if (job.lifecycleType === "offboarding") {
@@ -943,6 +943,7 @@ Import-Module ActiveDirectory
 
 # Zugangsdaten werden nur auf PK-SRVMGMT002 abgefragt und nicht gespeichert.
 $Credential = Get-Credential -Message 'Delegiertes AD-Konto eingeben'
+$InitialPassword = Read-Host -AsSecureString 'Initiales Kennwort fuer den neuen Mitarbeiter eingeben'
 $AdConnection = @{ Server = '${q(job.directory.domain)}'; Credential = $Credential; ErrorAction = 'Stop' }
 $SamAccountName = '${q(job.directory.samAccountName)}'
 
@@ -967,8 +968,9 @@ ${referenceLookup}
 
 # Benutzer mit Stellenbezeichnung in Beschreibung und Position anlegen.
 $User = Get-ADUser -Filter "SamAccountName -eq '$SamAccountName'" @AdConnection
+if ($User) { throw "AD-Benutzer '$SamAccountName' existiert bereits. Der Lauf wurde vor weiteren Aenderungen gestoppt." }
 if (-not $User) {
-    New-ADUser -Name '${q(job.person.displayName)}' -GivenName '${q(job.person.firstName)}' -Surname '${q(job.person.lastName)}' -DisplayName '${q(job.person.displayName)}' -SamAccountName $SamAccountName -UserPrincipalName '${q(job.directory.userPrincipalName)}' -EmailAddress '${q(job.directory.mail)}' -EmployeeNumber '${q(job.person.personnelNumber)}' -Department '${q(job.person.department)}' -Company '${q(job.person.company)}' -Description '${q(job.directory.description)}' -Title '${q(job.directory.title)}' -Path $TargetOu -Enabled $false @AdConnection -WhatIf:$WhatIfMode
+    New-ADUser -Name '${q(`${job.person.lastName}, ${job.person.firstName}`)}' -GivenName '${q(job.person.firstName)}' -Surname '${q(job.person.lastName)}' -DisplayName '${q(`${job.person.lastName}, ${job.person.firstName}`)}' -SamAccountName $SamAccountName -UserPrincipalName '${q(job.directory.userPrincipalName)}' -EmailAddress '${q(job.directory.mail)}' -EmployeeNumber '${q(job.person.personnelNumber)}' -Department '${q(job.person.department)}' -Company '${q(job.person.company)}' -Description '${q(job.directory.description)}' -Title '${q(job.directory.title)}' -Path $TargetOu -AccountPassword $InitialPassword -ChangePasswordAtLogon $true -Enabled $true @AdConnection -WhatIf:$WhatIfMode
     if (-not $WhatIfMode) { $User = Get-ADUser -Identity $SamAccountName @AdConnection }
 }
 ${referenceLines}

@@ -4,6 +4,7 @@ param(
     [ValidateScript({ Test-Path -LiteralPath $_ -PathType Leaf })]
     [string]$JobPath,
     [string]$CredentialPath = '',
+    [string]$InitialPasswordPath = '',
     [ValidateSet('Job', 'WhatIf', 'Execute')]
     [string]$Mode = 'Job'
 )
@@ -11,6 +12,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $resolvedJobPath = (Resolve-Path -LiteralPath $JobPath).Path
+$progressPath = [IO.Path]::ChangeExtension($resolvedJobPath, '.progress.json')
 $job = Get-Content -LiteralPath $resolvedJobPath -Raw -Encoding UTF8 | ConvertFrom-Json
 if ($job.schemaVersion -ne 1) { throw 'Unsupported job schema. Expected schemaVersion 1.' }
 if ($Mode -eq 'Job') { $Mode = if ($job.requestedMode -eq 'Execute') { 'Execute' } else { 'WhatIf' } }
@@ -26,10 +28,32 @@ $runStatus = 'completed'
 $runError = ''
 $referenceLookup = $null
 $adCredential = $null
+$initialPassword = $null
+$script:CurrentAction = 'Initialisierung'
+
+function Write-ProgressSnapshot {
+    $temporaryPath = "$progressPath.tmp"
+    try {
+        $snapshot = [pscustomobject]@{
+            status = 'running'
+            startedAt = $startedAt.ToString('o')
+            updatedAt = (Get-Date).ToString('o')
+            currentAction = $script:CurrentAction
+            log = $script:RunLog
+        }
+        $snapshot | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $temporaryPath -Encoding UTF8
+        Move-Item -LiteralPath $temporaryPath -Destination $progressPath -Force
+    } catch {
+        Remove-Item -LiteralPath $temporaryPath -Force -ErrorAction SilentlyContinue
+        Write-Warning "Progress snapshot could not be written: $($_.Exception.Message)"
+    }
+}
 
 function Add-RunLog {
     param([string]$Action, [string]$State, [string]$Message)
+    $script:CurrentAction = $Action
     $script:RunLog.Add([pscustomobject]@{ time = (Get-Date).ToString('o'); action = $Action; state = $State; message = $Message })
+    Write-ProgressSnapshot
 }
 
 function Add-Change {
@@ -81,13 +105,25 @@ try {
         }
         if ($adCredential -isnot [Management.Automation.PSCredential]) { throw 'The supplied AD credential could not be read.' }
     } else { throw 'No AD credential was supplied. Interactive prompts are disabled for gateway jobs.' }
+    if ($InitialPasswordPath) {
+        try {
+            $initialPasswordCredential = Import-Clixml -LiteralPath $InitialPasswordPath
+        } finally {
+            Remove-Item -LiteralPath $InitialPasswordPath -Force -ErrorAction SilentlyContinue
+        }
+        if ($initialPasswordCredential -isnot [Management.Automation.PSCredential]) { throw 'The supplied initial user password could not be read.' }
+        $initialPassword = $initialPasswordCredential.Password
+        $initialPasswordCredential = $null
+    }
+    Add-RunLog 'AD-Verbindung pruefen' 'running' $job.directory.domain
     Import-Module ActiveDirectory -ErrorAction Stop
     $null = Get-ADDomain -Identity $job.directory.domain -Server $job.directory.domain -Credential $adCredential
     $adArgs = @{ Server = $job.directory.domain; Credential = $adCredential; ErrorAction = 'Stop' }
-    Add-RunLog 'ValidateAdConnection' 'completed' $job.directory.domain
+    Add-RunLog 'AD-Verbindung pruefen' 'completed' $job.directory.domain
 
     if ($operation -eq 'reference_check') {
         $query = [string]$job.directory.referenceUser.query
+        Add-RunLog 'Referenzbenutzer suchen' 'running' $query
         $referenceUsers = @(Find-ReferenceUsers $job.directory.referenceUser $adArgs)
         if ($referenceUsers.Count -eq 1) {
             $matchedUser = $referenceUsers[0]
@@ -148,7 +184,20 @@ try {
         if ($Mode -eq 'Execute' -and $job.lifecycleType -ne 'offboarding' -and $job.directory.targetOu -eq 'REVIEW_REQUIRED') { throw 'Select and approve a target OU in the job before running the agent.' }
         if ($Mode -eq 'Execute' -and @($job.directory.computers | Where-Object { $_.mode -ne 'existing' -and ($_.prefix -eq 'REVIEW_REQUIRED' -or $_.targetOu -eq 'REVIEW_REQUIRED') }).Count) { throw 'Select and approve the location and computer OU before running the agent.' }
 
-        $existingUser = Get-ADUser -Filter "SamAccountName -eq '$($job.directory.samAccountName)'" @adArgs -Properties MemberOf,Mail,Enabled,DistinguishedName
+        Add-RunLog 'Vorbedingungen pruefen' 'running' $job.directory.samAccountName
+        $existingUser = Get-ADUser -Filter "SamAccountName -eq '$($job.directory.samAccountName)'" @adArgs -Properties MemberOf,Mail,Enabled,DistinguishedName,DisplayName,EmployeeNumber
+        $createUserRequested = @($job.actions | Where-Object { $_.type -eq 'CreateAdUser' }).Count -gt 0
+        if ($createUserRequested) {
+            if ($existingUser) {
+                throw "AD-Benutzer '$($job.directory.samAccountName)' existiert bereits als '$($existingUser.DisplayName)' ($($existingUser.DistinguishedName)). Der Lauf wurde vor weiteren Aenderungen gestoppt."
+            }
+            if ($Mode -eq 'Execute' -and -not $initialPassword) {
+                throw 'Fuer die aktivierte Benutzeranlage wurde kein initiales Benutzerkennwort uebergeben.'
+            }
+            Add-RunLog 'Vorbedingungen pruefen' 'completed' 'Kein vorhandenes Zielkonto gefunden.'
+        } else {
+            Add-RunLog 'Vorbedingungen pruefen' 'completed' $(if ($existingUser) { "Zielkonto gefunden: $($existingUser.DistinguishedName)" } else { 'Zielkonto wurde nicht gefunden.' })
+        }
         $assignedGroups = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
         if ($existingUser) { foreach ($groupDn in @($existingUser.MemberOf)) { $null = $assignedGroups.Add([string]$groupDn) } }
         $referenceUser = $null
@@ -162,20 +211,27 @@ try {
 
         foreach ($action in $job.actions) {
             $actionType = [string]$action.type
+            $actionTarget = [string]$action.target
+            Add-RunLog $actionType 'running' $actionTarget
             switch -Wildcard ($actionType) {
                 'CreateAdUser' {
-                    if ($existingUser) { Add-RunLog $actionType 'skipped' 'Account already exists.'; break }
+                    $adDisplayName = "$($job.person.lastName), $($job.person.firstName)"
                     $newUserArgs = @{
-                        Name = $job.person.displayName; GivenName = $job.person.firstName; Surname = $job.person.lastName; DisplayName = $job.person.displayName
+                        Name = $adDisplayName; GivenName = $job.person.firstName; Surname = $job.person.lastName; DisplayName = $adDisplayName
                         SamAccountName = $job.directory.samAccountName; UserPrincipalName = $job.directory.userPrincipalName; EmailAddress = $job.directory.mail
                         EmployeeNumber = $job.person.personnelNumber; Department = $job.person.department; Description = $job.directory.description
-                        Title = $job.directory.title; Company = $job.person.company; Path = $resolvedTargetOu; Enabled = $false
+                        Title = $job.directory.title; Company = $job.person.company; Path = $resolvedTargetOu; Enabled = ($Mode -eq 'Execute')
                     }
-                    $changed = Invoke-ApprovedAction 'Create disabled AD user' $job.directory.userPrincipalName { New-ADUser @newUserArgs @adArgs }
+                    if ($Mode -eq 'Execute') {
+                        $newUserArgs.AccountPassword = $initialPassword
+                        $newUserArgs.ChangePasswordAtLogon = $true
+                    }
+                    $changed = Invoke-ApprovedAction 'Aktivierten AD-Benutzer anlegen' $job.directory.userPrincipalName { New-ADUser @newUserArgs @adArgs }
                     if ($Mode -eq 'Execute' -and $changed) {
                         $existingUser = Get-ADUser -Identity $job.directory.samAccountName @adArgs -Properties MemberOf,Mail,Enabled,DistinguishedName
-                        Add-Change 'Benutzer angelegt' 'AD-Benutzer' $existingUser.SamAccountName 'Primaeres Konto der Mitarbeiterakte' $null $existingUser.DistinguishedName 'Remove-ADUser'
-                    } elseif ($Mode -eq 'WhatIf') { Add-Change 'Benutzer anlegen' 'AD-Benutzer' $job.directory.samAccountName 'Primaeres Konto der Mitarbeiterakte' $null $resolvedTargetOu 'manual' 'simulated' }
+                        if (-not [bool]$existingUser.Enabled) { throw "AD-Benutzer '$($job.directory.samAccountName)' wurde angelegt, ist aber nicht aktiviert. Bitte Kennwortrichtlinie pruefen." }
+                        Add-Change 'Aktivierten Benutzer angelegt' 'AD-Benutzer' $existingUser.SamAccountName "Anzeigename: $adDisplayName; Kennwortwechsel bei Anmeldung" $null $existingUser.DistinguishedName 'Remove-ADUser'
+                    } elseif ($Mode -eq 'WhatIf') { Add-Change 'Aktivierten Benutzer anlegen' 'AD-Benutzer' $job.directory.samAccountName "Anzeigename: $adDisplayName; Kennwortwechsel bei Anmeldung" $null $resolvedTargetOu 'manual' 'simulated' }
                 }
                 'CopyGroupsFromReference' {
                     if (-not $referenceUser) { throw 'Reference user action exists without a unique reference user.' }
@@ -248,8 +304,12 @@ try {
                 'CreateHelpdeskTicket' {
                     if ($Mode -eq 'WhatIf') { Add-RunLog $actionType 'simulated' $job.helpdesk.subject; Add-Change 'Helpdesk-Ticket erstellen' 'Helpdesk-Ticket' $job.helpdesk.subject "Vorgang fuer $($job.person.displayName)" $null $job.helpdesk.text 'manual' 'simulated'; break }
                     $body = @{ text = $job.helpdesk.text; htmlContent = $false; ticketFields = @{ subject = $job.helpdesk.subject }; actionArguments = @{} } | ConvertTo-Json -Depth 8
-                    $ticket = Invoke-RestMethod -Uri "$($job.helpdesk.baseUrl.TrimEnd('/'))/api/ticket/create" -Method Post -ContentType 'application/json; charset=utf-8' -Body $body -TimeoutSec 60
-                    $ticketId = if ($ticket.id) { [string]$ticket.id } elseif ($ticket.ticketId) { [string]$ticket.ticketId } else { $job.helpdesk.subject }
+                    try {
+                        $ticket = Invoke-RestMethod -Uri "$($job.helpdesk.baseUrl.TrimEnd('/'))/api/ticket/create" -Method Post -Credential $adCredential -ContentType 'application/json; charset=utf-8' -Body $body -TimeoutSec 60
+                    } catch {
+                        throw "HelpDesk-Ticket konnte nicht erstellt werden. Windows-Anmeldung mit dem angegebenen AD-Konto wurde abgelehnt oder die API ist nicht erreichbar: $($_.Exception.Message)"
+                    }
+                    $ticketId = if ($ticket -is [ValueType] -or $ticket -is [string]) { [string]$ticket } elseif ($ticket.PSObject.Properties['id']) { [string]$ticket.id } elseif ($ticket.PSObject.Properties['ticketId']) { [string]$ticket.ticketId } else { $job.helpdesk.subject }
                     Add-RunLog $actionType 'completed' "Ticket: $ticketId"
                     Add-Change 'Helpdesk-Ticket erstellt' 'Helpdesk-Ticket' $ticketId "Vorgang fuer $($job.person.displayName)" $null $job.helpdesk.subject 'manual'
                 }
@@ -259,11 +319,13 @@ try {
     }
 } catch {
     $runStatus = if ($script:Changes.Count) { 'partial' } else { 'failed' }
-    $runError = $_.Exception.Message
+    $runError = "Fehler bei '$($script:CurrentAction)': $($_.Exception.Message)"
     Add-RunLog 'Run failed' 'failed' $runError
 } finally {
     if ($CredentialPath) { Remove-Item -LiteralPath $CredentialPath -Force -ErrorAction SilentlyContinue }
+    if ($InitialPasswordPath) { Remove-Item -LiteralPath $InitialPasswordPath -Force -ErrorAction SilentlyContinue }
     $adCredential = $null
+    $initialPassword = $null
     $completedAt = Get-Date
     [string[]]$automationTaskIds = @()
     if ($job.PSObject.Properties['automationTaskIds']) {
@@ -280,6 +342,7 @@ try {
     $resultPath = [IO.Path]::ChangeExtension($resolvedJobPath, '.result.json')
     $resultJson = $result | ConvertTo-Json -Depth 12
     $resultJson | Set-Content -LiteralPath $resultPath -Encoding UTF8
+    Remove-Item -LiteralPath $progressPath -Force -ErrorAction SilentlyContinue
     if ($job.PSObject.Properties['callbackUrl'] -and $job.callbackUrl) {
         $callbackHeaders = @{ 'content-type' = 'application/json' }
         if ($job.PSObject.Properties['callbackToken'] -and $job.callbackToken) { $callbackHeaders.authorization = "Bearer $($job.callbackToken)" }

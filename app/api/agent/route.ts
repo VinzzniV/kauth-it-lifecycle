@@ -43,6 +43,7 @@ const jobSchema = z.discriminatedUnion("operation", [
         })
         .passthrough(),
       adCredential: adCredentialSchema,
+      initialPassword: z.string().min(1).max(512).optional(),
       helpdesk: z.object({
         baseUrl: z.string(),
         subject: z.string(),
@@ -87,7 +88,32 @@ const jobSchema = z.discriminatedUnion("operation", [
 export async function POST(request: Request) {
   try {
     const job = jobSchema.parse(await request.json());
+    if (
+      job.operation === "execute" &&
+      job.requestedMode === "Execute" &&
+      job.actions.some((action) => action.type === "CreateAdUser") &&
+      !job.initialPassword
+    )
+      return Response.json(
+        {
+          error:
+            "Für die aktivierte Benutzeranlage fehlt das initiale Benutzerkennwort.",
+        },
+        { status: 400 },
+      );
     const db = getDb();
+    const [existingRun] = await db
+      .select({ id: automationRuns.id })
+      .from(automationRuns)
+      .where(eq(automationRuns.id, job.jobId))
+      .limit(1);
+    if (existingRun)
+      return Response.json(
+        {
+          error: `Auftrag ${job.jobId} wurde bereits angelegt und wird nicht erneut gestartet.`,
+        },
+        { status: 409 },
+      );
     const now = new Date().toISOString();
     await db
       .insert(automationRuns)
@@ -139,8 +165,12 @@ export async function GET(request: Request) {
         { status: 400 },
       );
     const response = await readManagementAgentResult(jobId);
-    if (response.status === 202)
-      return Response.json({ status: "running" }, { status: 202 });
+    if (response.status === 202) {
+      const progress = await response.json().catch(() => ({
+        status: "running",
+      }));
+      return Response.json(progress, { status: 202 });
+    }
     if (!response.ok)
       return Response.json(
         { error: `Ergebnis konnte nicht gelesen werden (${response.status}).` },

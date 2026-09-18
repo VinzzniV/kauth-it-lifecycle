@@ -92,7 +92,17 @@ try {
                     if ($runningJobs.ContainsKey($safeResultId)) {
                         $process = $runningJobs[$safeResultId]
                         if (-not $process.HasExited) {
-                            $payload = @{ status = 'running'; startedAt = $process.StartTime.ToString('o') } | ConvertTo-Json -Compress
+                            $progressPath = Join-Path $QueuePath "$safeResultId.progress.json"
+                            if (Test-Path -LiteralPath $progressPath) {
+                                try {
+                                    $payload = Get-Content -LiteralPath $progressPath -Raw -Encoding UTF8
+                                    $null = $payload | ConvertFrom-Json
+                                } catch {
+                                    $payload = @{ status = 'running'; startedAt = $process.StartTime.ToString('o'); currentAction = 'Status wird aktualisiert'; log = @() } | ConvertTo-Json -Depth 8 -Compress
+                                }
+                            } else {
+                                $payload = @{ status = 'running'; startedAt = $process.StartTime.ToString('o'); currentAction = 'Agent wird gestartet'; log = @() } | ConvertTo-Json -Depth 8 -Compress
+                            }
                             $bytes = [Text.Encoding]::UTF8.GetBytes($payload)
                             $context.Response.StatusCode = 202
                             $context.Response.ContentType = 'application/json'
@@ -137,25 +147,52 @@ try {
             $safeJobId = ([string]$job.jobId) -replace '[^a-zA-Z0-9._-]', '_'
             $jobPath = Join-Path $QueuePath "$safeJobId.json"
             $resultPath = Join-Path $QueuePath "$safeJobId.result.json"
+            if (Test-Path -LiteralPath $resultPath) {
+                $payload = @{ error = "Auftrag '$safeJobId' wurde bereits ausgefuehrt und wird nicht erneut gestartet." } | ConvertTo-Json -Compress
+                $bytes = [Text.Encoding]::UTF8.GetBytes($payload)
+                $context.Response.StatusCode = 409
+                $context.Response.ContentType = 'application/json'
+                $context.Response.OutputStream.Write($bytes, 0, $bytes.Length)
+                continue
+            }
             if ((Test-Path -LiteralPath $jobPath) -and -not (Test-Path -LiteralPath $resultPath)) {
                 $context.Response.StatusCode = 202
                 continue
             }
             $credentialPath = ''
-            if ($job.PSObject.Properties['adCredential']) {
-                $credentialPath = Join-Path $QueuePath "$safeJobId.ad.credential.xml"
-                Export-TransientCredential $job.adCredential $credentialPath
-                $job.PSObject.Properties.Remove('adCredential')
+            $initialPasswordPath = ''
+            try {
+                if ($job.PSObject.Properties['adCredential']) {
+                    $credentialPath = Join-Path $QueuePath "$safeJobId.ad.credential.xml"
+                    Export-TransientCredential $job.adCredential $credentialPath
+                    $job.PSObject.Properties.Remove('adCredential')
+                }
+                if ($job.PSObject.Properties['initialPassword']) {
+                    $initialPasswordPath = Join-Path $QueuePath "$safeJobId.initial-password.credential.xml"
+                    $initialPasswordSpec = [pscustomobject]@{
+                        username = [string]$job.directory.samAccountName
+                        password = [string]$job.initialPassword
+                    }
+                    Export-TransientCredential $initialPasswordSpec $initialPasswordPath
+                    $job.PSObject.Properties.Remove('initialPassword')
+                    $initialPasswordSpec = $null
+                }
+                $raw = $null
+                $job | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $jobPath -Encoding UTF8
+            } catch {
+                if ($credentialPath) { Remove-Item -LiteralPath $credentialPath -Force -ErrorAction SilentlyContinue }
+                if ($initialPasswordPath) { Remove-Item -LiteralPath $initialPasswordPath -Force -ErrorAction SilentlyContinue }
+                throw
             }
-            $raw = $null
-            $job | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $jobPath -Encoding UTF8
             $agentArguments = @('-NoProfile', '-ExecutionPolicy', 'RemoteSigned', '-File', $agentPath, '-JobPath', $jobPath, '-Mode', $job.requestedMode)
             if ($credentialPath) { $agentArguments += @('-CredentialPath', $credentialPath) }
+            if ($initialPasswordPath) { $agentArguments += @('-InitialPasswordPath', $initialPasswordPath) }
             try {
                 $agentProcess = Start-Process -FilePath 'powershell.exe' -ArgumentList $agentArguments -WindowStyle Hidden -PassThru
                 $runningJobs[$safeJobId] = $agentProcess
             } catch {
                 if ($credentialPath) { Remove-Item -LiteralPath $credentialPath -Force -ErrorAction SilentlyContinue }
+                if ($initialPasswordPath) { Remove-Item -LiteralPath $initialPasswordPath -Force -ErrorAction SilentlyContinue }
                 throw
             }
             $payload = @{ ok = $true; jobId = $job.jobId } | ConvertTo-Json -Compress
