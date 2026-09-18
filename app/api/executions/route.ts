@@ -9,10 +9,16 @@ const changeSchema = z.object({
   id: z.string().optional(), action: z.string(), resourceType: z.string(), resourceId: z.string(), relation: z.string().default(""),
   beforeValue: z.unknown().optional(), afterValue: z.unknown().optional(), rollbackAction: z.string().default("manual"), status: z.string().default("completed"),
 });
+const stringArraySchema = z.preprocess((value) => {
+  if (value == null) return [];
+  if (Array.isArray(value)) return value;
+  if (typeof value === "object") return Object.values(value as Record<string, unknown>).filter((item) => typeof item === "string");
+  return [value];
+}, z.array(z.string()));
 const resultSchema = z.object({
   schemaVersion: z.literal(1), runId: z.string(), jobId: z.string(), employeeId: z.string(), operation: z.enum(["execute", "rollback", "reference_check"]),
   mode: z.enum(["WhatIf", "Execute"]), status: z.enum(["completed", "partial", "failed"]), relatedRunId: z.string().nullable().optional(),
-  startedAt: z.string(), completedAt: z.string(), error: z.string().optional(), automationTaskIds: z.array(z.string()).default([]), changes: z.array(changeSchema).default([]),
+  startedAt: z.string(), completedAt: z.string(), error: z.string().optional(), automationTaskIds: stringArraySchema.default([]), changes: z.array(changeSchema).default([]),
   referenceLookup: z.object({ query: z.string(), status: z.enum(["found", "not_found", "ambiguous"]), count: z.number(), samAccountName: z.string().optional(), displayName: z.string().optional(), distinguishedName: z.string().optional(), targetOu: z.string().optional() }).nullable().optional(),
 });
 const jsonValue = (value: unknown) => value === undefined ? null : JSON.stringify(value);
@@ -40,19 +46,21 @@ export async function POST(request: Request) {
         rollbackAction: change.rollbackAction, status: change.status,
       })));
     }
-    if (result.operation === "reference_check" && result.referenceLookup) {
+    if (result.operation === "reference_check") {
       const lookup = result.referenceLookup;
-      const message = lookup.status === "found"
-        ? `${lookup.displayName ?? lookup.samAccountName ?? lookup.query} gefunden`
-        : lookup.status === "ambiguous" ? `${lookup.count} passende Benutzer gefunden` : "Referenzbenutzer nicht gefunden";
+      const message = lookup
+        ? lookup.status === "found"
+          ? `${lookup.displayName ?? lookup.samAccountName ?? lookup.query} gefunden`
+          : lookup.status === "ambiguous" ? `${lookup.count} passende Benutzer gefunden` : "Referenzbenutzer nicht gefunden"
+        : result.error || "Die Referenzprüfung ist fehlgeschlagen.";
       await db.update(employees).set({
-        directoryReferenceUser: lookup.samAccountName ?? lookup.query,
-        directoryReferenceStatus: lookup.status,
+        directoryReferenceUser: lookup?.samAccountName ?? lookup?.query,
+        directoryReferenceStatus: lookup?.status ?? "error",
         directoryReferenceMessage: message,
-        directoryTargetOu: lookup.status === "found" ? lookup.targetOu ?? "" : "",
+        directoryTargetOu: lookup?.status === "found" ? lookup.targetOu ?? "" : "",
         updatedAt: result.completedAt,
       }).where(eq(employees.id, result.employeeId));
-      await db.insert(auditEntries).values({ employeeId: result.employeeId, action: "Referenzbenutzer geprüft", detail: `${lookup.query}: ${message}` });
+      await db.insert(auditEntries).values({ employeeId: result.employeeId, action: "Referenzbenutzer geprüft", detail: `${lookup?.query ?? "Unbekannte Abfrage"}: ${message}` });
       return Response.json({ ok: true });
     }
     if (result.operation === "rollback" && result.relatedRunId && result.status === "completed") {

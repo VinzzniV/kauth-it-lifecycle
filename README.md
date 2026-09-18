@@ -25,6 +25,14 @@ PowerShell -ExecutionPolicy Bypass -File .\Start-Local.ps1
 
 Die Anwendung ist anschließend standardmäßig unter `http://localhost:8080` erreichbar.
 
+Auf dem Windows-Jobserver muss das Active-Directory-PowerShell-Modul installiert sein. Unter Windows Server geschieht das in einer administrativen PowerShell mit:
+
+```powershell
+Install-WindowsFeature RSAT-AD-PowerShell
+```
+
+Prüfen lässt sich die Installation mit `Get-Module -ListAvailable ActiveDirectory`.
+
 ## Entwicklung
 
 ```powershell

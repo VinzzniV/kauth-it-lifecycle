@@ -31,7 +31,8 @@ function Add-RunLog {
 }
 
 function Add-Change {
-    param([string]$Action, [string]$ResourceType, [string]$ResourceId, [string]$Relation, $BeforeValue, $AfterValue, [string]$RollbackAction, [string]$State = 'completed')
+    param([string]$Action, [string]$ResourceType, [string]$ResourceId, [string]$Relation, $BeforeValue, $AfterValue, [string]$RollbackAction, [string]$State = '')
+    if (-not $State) { $State = if ($Mode -eq 'WhatIf') { 'simulated' } else { 'completed' } }
     $script:Changes.Add([pscustomobject]@{
         id = "change-$([guid]::NewGuid().ToString('N'))"; action = $Action; resourceType = $ResourceType; resourceId = $ResourceId
         relation = $Relation; beforeValue = $BeforeValue; afterValue = $AfterValue; rollbackAction = $RollbackAction; status = $State
@@ -40,7 +41,7 @@ function Add-Change {
 
 function Invoke-ApprovedAction {
     param([string]$Action, [string]$Target, [scriptblock]$Operation)
-    if ($Mode -eq 'WhatIf') { Add-RunLog $Action 'simulated' "Would change: $Target"; return $false }
+    if ($Mode -eq 'WhatIf') { Add-RunLog $Action 'simulated' "Would change: $Target"; return $true }
     if ($PSCmdlet.ShouldProcess($Target, $Action)) { $null = & $Operation; Add-RunLog $Action 'completed' $Target; return $true }
     Add-RunLog $Action 'skipped' $Target
     return $false
@@ -232,11 +233,15 @@ try {
     Add-RunLog 'Run failed' 'failed' $runError
 } finally {
     $completedAt = Get-Date
+    [string[]]$automationTaskIds = @()
+    if ($job.PSObject.Properties['automationTaskIds']) {
+        $automationTaskIds = @($job.automationTaskIds | ForEach-Object { [string]$_ } | Where-Object { $_ })
+    }
     $result = [pscustomobject]@{
         schemaVersion = 1; runId = $runId; jobId = [string]$job.jobId; employeeId = [string]$job.person.employeeId
         operation = $operation; mode = $Mode; status = $runStatus; relatedRunId = if ($operation -eq 'rollback') { [string]$job.originalRun.id } else { $null }
         startedAt = $startedAt.ToString('o'); completedAt = $completedAt.ToString('o'); error = $runError
-        automationTaskIds = if ($job.PSObject.Properties['automationTaskIds']) { @($job.automationTaskIds) } else { @() }; changes = $script:Changes; log = $script:RunLog
+        automationTaskIds = [string[]]$automationTaskIds; changes = $script:Changes; log = $script:RunLog
         referenceLookup = $referenceLookup
         computerName = $env:COMPUTERNAME; operator = [Security.Principal.WindowsIdentity]::GetCurrent().Name
     }
