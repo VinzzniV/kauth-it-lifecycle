@@ -70,8 +70,36 @@ try {
                 $context.Response.StatusCode = 202
                 continue
             }
-            $raw | Set-Content -LiteralPath $jobPath -Encoding UTF8
-            Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'RemoteSigned', '-File', $agentPath, '-JobPath', $jobPath, '-Mode', $job.requestedMode)
+            $credentialPath = ''
+            if ($job.PSObject.Properties['adCredential']) {
+                $username = ([string]$job.adCredential.username).Trim()
+                $plainPassword = [string]$job.adCredential.password
+                if ([string]::IsNullOrWhiteSpace($username) -or [string]::IsNullOrWhiteSpace($plainPassword) -or $username.Length -gt 200 -or $plainPassword.Length -gt 512) {
+                    $plainPassword = $null
+                    $username = $null
+                    $context.Response.StatusCode = 400
+                    continue
+                }
+                $credentialPath = Join-Path $QueuePath "$safeJobId.credential.xml"
+                $securePassword = ConvertTo-SecureString -String $plainPassword -AsPlainText -Force
+                $credential = [Management.Automation.PSCredential]::new($username, $securePassword)
+                $credential | Export-Clixml -LiteralPath $credentialPath -Force
+                $job.PSObject.Properties.Remove('adCredential')
+                $plainPassword = $null
+                $username = $null
+                $securePassword = $null
+                $credential = $null
+            }
+            $raw = $null
+            $job | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $jobPath -Encoding UTF8
+            $agentArguments = @('-NoProfile', '-ExecutionPolicy', 'RemoteSigned', '-File', $agentPath, '-JobPath', $jobPath, '-Mode', $job.requestedMode)
+            if ($credentialPath) { $agentArguments += @('-CredentialPath', $credentialPath) }
+            try {
+                Start-Process -FilePath 'powershell.exe' -ArgumentList $agentArguments -WindowStyle Hidden
+            } catch {
+                if ($credentialPath) { Remove-Item -LiteralPath $credentialPath -Force -ErrorAction SilentlyContinue }
+                throw
+            }
             $payload = @{ ok = $true; jobId = $job.jobId } | ConvertTo-Json -Compress
             $bytes = [Text.Encoding]::UTF8.GetBytes($payload)
             $context.Response.StatusCode = 202

@@ -22,7 +22,9 @@ Die Datenbank liegt in einem Docker-Volume und bleibt bei Neustarts oder Image-U
 4. `PowerShell -ExecutionPolicy RemoteSigned -File .\public\agent\Start-ItLifecycleGateway.ps1 -ListenPrefix http://+:8788/` starten.
 5. Den Token eingeben und das Fenster geöffnet lassen.
 
-Beim WhatIf oder bei einer echten Ausführung öffnet der Agent lokal eine PowerShell-Abfrage für die AD- und Helpdesk-Zugangsdaten. Zugangsdaten werden nicht in der Webanwendung oder Datenbank gespeichert.
+Vor Referenzprüfung, WhatIf, Ausführung und Rollback fragt die Weboberfläche nach den AD-Zugangsdaten. Der Gateway wandelt sie sofort in eine mit Windows DPAPI geschützte, temporäre Credential-Datei um. Der Agent liest und löscht diese Datei beim Start; Zugangsdaten werden weder in der Jobdatei noch in Datenbank oder Ergebnis gespeichert. Ohne mitgelieferte Zugangsdaten bleibt die lokale PowerShell-Abfrage als Rückfall erhalten.
+
+Da die Zugangsdaten vom Browser an den Server übertragen werden, muss die Anwendung außerhalb einer isolierten Testumgebung über HTTPS bereitgestellt werden. Für den Regelbetrieb sollte ein delegiertes AD-Konto statt Domain Admin verwendet werden.
 
 ## Entwicklung ohne Docker-Neubau
 

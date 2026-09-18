@@ -9,7 +9,7 @@ Interne Anwendung für das Einlesen von HR-Laufkarten, die Bearbeitung manueller
 - Dauerhafte Mitarbeiterakte mit Aufgaben, Systemen und Ereignissen
 - Active-Directory-Vorschau mit expliziter Ziel-OU
 - Referenzbenutzer für die Übernahme direkter Gruppenmitgliedschaften
-- Automatische AD-Prüfung des Referenzbenutzers mit gespeicherter Ziel-OU und manueller Wiederholungsprüfung
+- AD-Prüfung des Referenzbenutzers mit gespeicherter Ziel-OU und manueller Wiederholungsprüfung
 - Automatische AD-Computerplanung nach Standort und Gerätetyp
 - WhatIf, echte Ausführung, Ergebnisprotokoll und gezielter Rollback
 - Docker-Betrieb mit lokaler Datenbank, persistentem Volume und Zugriffsschutz
@@ -60,6 +60,7 @@ Das Update lädt ausschließlich freigegebene Änderungen, baut das Docker-Image
 ## Sicherheit
 
 - `.env` enthält Geheimnisse und ist von Git ausgeschlossen.
-- AD- und Helpdesk-Kennwörter werden nicht an die Webanwendung übertragen oder gespeichert.
+- Helpdesk-Kennwörter bleiben in der lokalen Abfrage des Agenten und werden nicht gespeichert.
+- AD-Zugangsdaten werden pro Auftrag übergeben, im Gateway sofort aus der Jobdatei entfernt und nur kurzzeitig DPAPI-geschützt an den Agenten weitergereicht. Für diesen Weg ist HTTPS außerhalb isolierter Tests erforderlich.
 - Für den produktiven Betrieb sollte statt Domain Admin ein delegiertes Konto mit den tatsächlich benötigten Rechten verwendet werden.
 - Helpdesk-Tickets werden protokolliert, aber mangels bestätigter Storno-API nicht automatisch zurückgenommen.
