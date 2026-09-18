@@ -4,7 +4,6 @@ param(
     [ValidateScript({ Test-Path -LiteralPath $_ -PathType Leaf })]
     [string]$JobPath,
     [string]$CredentialPath = '',
-    [string]$HelpdeskCredentialPath = '',
     [ValidateSet('Job', 'WhatIf', 'Execute')]
     [string]$Mode = 'Job'
 )
@@ -27,7 +26,6 @@ $runStatus = 'completed'
 $runError = ''
 $referenceLookup = $null
 $adCredential = $null
-$helpdeskCredential = $null
 
 function Add-RunLog {
     param([string]$Action, [string]$State, [string]$Message)
@@ -72,7 +70,7 @@ function Find-ReferenceUsers {
 
 Write-Host "IT Lifecycle agent - $operation / $Mode" -ForegroundColor Cyan
 Write-Host "Job: $($job.jobId)"
-Write-Host 'Credentials are loaded from one-time DPAPI files and are not written to the result file.' -ForegroundColor DarkGray
+Write-Host 'The AD credential is loaded from a one-time DPAPI file and is not written to the result file.' -ForegroundColor DarkGray
 
 try {
     if ($CredentialPath) {
@@ -83,17 +81,6 @@ try {
         }
         if ($adCredential -isnot [Management.Automation.PSCredential]) { throw 'The supplied AD credential could not be read.' }
     } else { throw 'No AD credential was supplied. Interactive prompts are disabled for gateway jobs.' }
-    if ($HelpdeskCredentialPath) {
-        try {
-            $helpdeskCredential = Import-Clixml -LiteralPath $HelpdeskCredentialPath
-        } finally {
-            Remove-Item -LiteralPath $HelpdeskCredentialPath -Force -ErrorAction SilentlyContinue
-        }
-        if ($helpdeskCredential -isnot [Management.Automation.PSCredential]) { throw 'The supplied HelpDesk credential could not be read.' }
-    }
-    if ($Mode -eq 'Execute' -and @($job.actions | Where-Object { $_.type -eq 'CreateHelpdeskTicket' }).Count -and -not $helpdeskCredential) {
-        throw 'No HelpDesk credential was supplied. The run was stopped before any changes were made.'
-    }
     Import-Module ActiveDirectory -ErrorAction Stop
     $null = Get-ADDomain -Identity $job.directory.domain -Server $job.directory.domain -Credential $adCredential
     $adArgs = @{ Server = $job.directory.domain; Credential = $adCredential; ErrorAction = 'Stop' }
@@ -260,16 +247,11 @@ try {
                 }
                 'CreateHelpdeskTicket' {
                     if ($Mode -eq 'WhatIf') { Add-RunLog $actionType 'simulated' $job.helpdesk.subject; Add-Change 'Helpdesk-Ticket erstellen' 'Helpdesk-Ticket' $job.helpdesk.subject "Vorgang fuer $($job.person.displayName)" $null $job.helpdesk.text 'manual' 'simulated'; break }
-                    $plainPassword = $helpdeskCredential.GetNetworkCredential().Password
-                    try {
-                        $basicBytes = [Text.Encoding]::ASCII.GetBytes("$($helpdeskCredential.UserName):$plainPassword")
-                        $headers = @{ Authorization = "Basic $([Convert]::ToBase64String($basicBytes))" }
-                        $body = @{ text = $job.helpdesk.text; htmlContent = $false; ticketFields = @{ subject = $job.helpdesk.subject }; actionArguments = @{} } | ConvertTo-Json -Depth 8
-                        $ticket = Invoke-RestMethod -Uri "$($job.helpdesk.baseUrl.TrimEnd('/'))/api/ticket/create" -Method Post -Headers $headers -ContentType 'application/json; charset=utf-8' -Body $body -TimeoutSec 60
-                        $ticketId = if ($ticket.id) { [string]$ticket.id } elseif ($ticket.ticketId) { [string]$ticket.ticketId } else { $job.helpdesk.subject }
-                        Add-RunLog $actionType 'completed' "Ticket: $ticketId"
-                        Add-Change 'Helpdesk-Ticket erstellt' 'Helpdesk-Ticket' $ticketId "Vorgang fuer $($job.person.displayName)" $null $job.helpdesk.subject 'manual'
-                    } finally { $plainPassword = $null; $basicBytes = $null; $headers = $null }
+                    $body = @{ text = $job.helpdesk.text; htmlContent = $false; ticketFields = @{ subject = $job.helpdesk.subject }; actionArguments = @{} } | ConvertTo-Json -Depth 8
+                    $ticket = Invoke-RestMethod -Uri "$($job.helpdesk.baseUrl.TrimEnd('/'))/api/ticket/create" -Method Post -ContentType 'application/json; charset=utf-8' -Body $body -TimeoutSec 60
+                    $ticketId = if ($ticket.id) { [string]$ticket.id } elseif ($ticket.ticketId) { [string]$ticket.ticketId } else { $job.helpdesk.subject }
+                    Add-RunLog $actionType 'completed' "Ticket: $ticketId"
+                    Add-Change 'Helpdesk-Ticket erstellt' 'Helpdesk-Ticket' $ticketId "Vorgang fuer $($job.person.displayName)" $null $job.helpdesk.subject 'manual'
                 }
                 default { Add-RunLog $actionType 'skipped' 'Unknown action type.' }
             }
@@ -281,9 +263,7 @@ try {
     Add-RunLog 'Run failed' 'failed' $runError
 } finally {
     if ($CredentialPath) { Remove-Item -LiteralPath $CredentialPath -Force -ErrorAction SilentlyContinue }
-    if ($HelpdeskCredentialPath) { Remove-Item -LiteralPath $HelpdeskCredentialPath -Force -ErrorAction SilentlyContinue }
     $adCredential = $null
-    $helpdeskCredential = $null
     $completedAt = Get-Date
     [string[]]$automationTaskIds = @()
     if ($job.PSObject.Properties['automationTaskIds']) {

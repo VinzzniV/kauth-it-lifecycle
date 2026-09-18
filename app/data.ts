@@ -866,16 +866,8 @@ if ($WhatIfMode) {
     Write-Host "WHATIF: HelpDesk-Ticket '${q(job.helpdesk.subject)}'"
     Write-Host $TicketText
 } elseif ($PSCmdlet.ShouldProcess('${q(job.helpdesk.baseUrl)}', 'HelpDesk-Ticket erstellen')) {
-    $HelpdeskCredential = Get-Credential -Message 'i-net-HelpDesk-API-Konto eingeben'
-    $PlainPassword = $HelpdeskCredential.GetNetworkCredential().Password
-    try {
-        $BasicBytes = [Text.Encoding]::ASCII.GetBytes("$($HelpdeskCredential.UserName):$PlainPassword")
-        $Headers = @{ Authorization = "Basic $([Convert]::ToBase64String($BasicBytes))" }
-        $Body = @{ text = $TicketText; htmlContent = $false; ticketFields = @{ subject = '${q(job.helpdesk.subject)}' }; actionArguments = @{} } | ConvertTo-Json -Depth 8
-        Invoke-RestMethod -Uri '${q(job.helpdesk.baseUrl)}/api/ticket/create' -Method Post -Headers $Headers -ContentType 'application/json; charset=utf-8' -Body $Body
-    } finally {
-        $PlainPassword = $null; $BasicBytes = $null; $Headers = $null
-    }
+    $Body = @{ text = $TicketText; htmlContent = $false; ticketFields = @{ subject = '${q(job.helpdesk.subject)}' }; actionArguments = @{} } | ConvertTo-Json -Depth 8
+    Invoke-RestMethod -Uri '${q(job.helpdesk.baseUrl)}/api/ticket/create' -Method Post -ContentType 'application/json; charset=utf-8' -Body $Body -TimeoutSec 60
 }`;
 
   if (job.lifecycleType === "offboarding") {

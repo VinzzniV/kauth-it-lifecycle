@@ -43,7 +43,6 @@ const jobSchema = z.discriminatedUnion("operation", [
         })
         .passthrough(),
       adCredential: adCredentialSchema,
-      helpdeskCredential: adCredentialSchema.optional(),
       helpdesk: z.object({
         baseUrl: z.string(),
         subject: z.string(),
@@ -88,17 +87,6 @@ const jobSchema = z.discriminatedUnion("operation", [
 export async function POST(request: Request) {
   try {
     const job = jobSchema.parse(await request.json());
-    if (
-      job.operation === "execute" &&
-      job.requestedMode === "Execute" &&
-      job.actions.some((action) => action.type === "CreateHelpdeskTicket") &&
-      !job.helpdeskCredential
-    ) {
-      return Response.json(
-        { error: "Für die echte Ausführung fehlen die HelpDesk-Zugangsdaten." },
-        { status: 400 },
-      );
-    }
     const db = getDb();
     const now = new Date().toISOString();
     await db
