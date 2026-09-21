@@ -35,6 +35,8 @@ Docker, Windows-Gateway und M365-Verbindungstest lesen gemeinsam die lokale Date
 .\Configure-ItLifecycle.ps1
 ```
 
+Mit `.\Configure-ItLifecycle.ps1 -RotateSecrets` werden Web-Kennwort und Gateway-Token neu erzeugt, während alle anderen Werte erhalten bleiben.
+
 Danach genügen für den Betrieb:
 
 ```powershell

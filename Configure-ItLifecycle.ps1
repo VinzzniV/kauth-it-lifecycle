@@ -1,6 +1,7 @@
 [CmdletBinding()]
 param(
-    [string]$ConfigurationPath = (Join-Path $PSScriptRoot '.env')
+    [string]$ConfigurationPath = (Join-Path $PSScriptRoot '.env'),
+    [switch]$RotateSecrets
 )
 
 Set-StrictMode -Version Latest
@@ -43,14 +44,14 @@ Write-Host ''
 
 $settings['APP_PORT'] = Read-ConfigurationValue 'APP_PORT' 'Web-Port' '8080'
 $settings['APP_USERNAME'] = Read-ConfigurationValue 'APP_USERNAME' 'Anmeldename der Webanwendung' 'itadmin'
-if (-not $settings.ContainsKey('APP_PASSWORD') -or [string]::IsNullOrWhiteSpace([string]$settings['APP_PASSWORD']) -or [string]$settings['APP_PASSWORD'] -like 'BITTE-*') {
+if ($RotateSecrets -or -not $settings.ContainsKey('APP_PASSWORD') -or [string]::IsNullOrWhiteSpace([string]$settings['APP_PASSWORD']) -or [string]$settings['APP_PASSWORD'] -like 'BITTE-*') {
     $settings['APP_PASSWORD'] = New-RandomValue 24
     Write-Host 'Ein neues zufaelliges Web-Kennwort wurde erzeugt.' -ForegroundColor Green
 } else {
     Write-Host 'Vorhandenes Web-Kennwort wird beibehalten.' -ForegroundColor DarkGray
 }
 $settings['MANAGEMENT_AGENT_URL'] = Read-ConfigurationValue 'MANAGEMENT_AGENT_URL' 'Gateway-Adresse fuer Docker' 'http://host.docker.internal:8788'
-if (-not $settings.ContainsKey('MANAGEMENT_AGENT_TOKEN') -or [string]::IsNullOrWhiteSpace([string]$settings['MANAGEMENT_AGENT_TOKEN']) -or [string]$settings['MANAGEMENT_AGENT_TOKEN'] -like 'BITTE-*') {
+if ($RotateSecrets -or -not $settings.ContainsKey('MANAGEMENT_AGENT_TOKEN') -or [string]::IsNullOrWhiteSpace([string]$settings['MANAGEMENT_AGENT_TOKEN']) -or [string]$settings['MANAGEMENT_AGENT_TOKEN'] -like 'BITTE-*') {
     $settings['MANAGEMENT_AGENT_TOKEN'] = New-RandomValue 32
     Write-Host 'Ein neuer zufaelliger Gateway-Token wurde erzeugt.' -ForegroundColor Green
 } else {
