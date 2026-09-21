@@ -90,11 +90,20 @@ $listener.Prefixes.Add($ListenPrefix)
 $listener.Start()
 Write-Host "Konfiguration: $ConfigurationPath" -ForegroundColor DarkGray
 Write-Host "IT Lifecycle Gateway listening on $ListenPrefix" -ForegroundColor Cyan
-Write-Host 'Keep this window open. WhatIf, Execute and rollback jobs are accepted.' -ForegroundColor DarkGray
+Write-Host 'Fenster offen lassen. Zum sauberen Beenden Strg+C druecken.' -ForegroundColor DarkGray
+Write-Host 'WhatIf-, Ausfuehrungs- und Rollback-Auftraege werden angenommen.' -ForegroundColor DarkGray
 
 try {
     while ($listener.IsListening) {
-        $context = $listener.GetContext()
+        # GetContext() blocks Windows PowerShell so deeply that Ctrl+C is not
+        # processed while no request arrives. Polling the asynchronous task
+        # gives the host regular opportunities to handle the cancel signal and
+        # enter the finally block below, which releases the listener cleanly.
+        $contextTask = $listener.GetContextAsync()
+        while (-not $contextTask.IsCompleted) {
+            Start-Sleep -Milliseconds 200
+        }
+        $context = $contextTask.GetAwaiter().GetResult()
         try {
             if ($context.Request.HttpMethod -eq 'GET' -and $context.Request.Url.AbsolutePath -eq '/health') {
                 $payload = @{ status = 'ok'; queuePath = $QueuePath } | ConvertTo-Json -Compress
