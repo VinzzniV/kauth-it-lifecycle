@@ -11,11 +11,11 @@ IT Lifecycle Agent - Pilot
 6. The matching *.result.json contains every actual or simulated change, the affected object, its employee relationship, before/after values and its rollback action.
 
 Security:
-- The portal never receives or stores passwords.
-- AD and HelpDesk credentials are requested locally for each run.
+- The portal forwards passwords only for the current job and never writes them to the employee record, job file or result.
+- AD and HelpDesk use separate transient Windows credentials. The HelpDesk account needs ticket permissions but no AD administration rights.
 - Use a delegated test account. Domain Admin is technically accepted but not recommended.
-- New AD accounts are created disabled. Enabling and initial-password handling are deliberately outside this pilot.
-- Execute mode asks for confirmation before each change.
+- New AD accounts receive the one-time initial password, are enabled and require a password change at first logon.
+- The portal shows the complete preview before the operator explicitly starts Execute mode.
 
 Prerequisites:
 - ActiveDirectory PowerShell module
@@ -26,7 +26,7 @@ Direct start from the portal (optional pilot gateway):
 - Run Start-ItLifecycleGateway.ps1 interactively on PK-SRVMGMT002.
 - Connect its localhost listener through a private Sites tunnel as `management_agent`.
 - Configure the same gateway token as the Sites secret MANAGEMENT_AGENT_TOKEN.
-- The gateway accepts WhatIf, Execute and rollback jobs and opens the local credential prompt on PK-SRVMGMT002.
+- The gateway accepts WhatIf, Execute and rollback jobs. The portal supplies separate one-time AD and HelpDesk credentials for real runs.
 - The portal polls the authenticated /results endpoint and stores the returned result in the employee record.
 - Rollback reverses only changes recorded by that exact execution. Helpdesk tickets without a confirmed cancellation API remain documented as manual follow-up.
 - Never publish port 8788 directly to the internet.

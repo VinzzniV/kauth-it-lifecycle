@@ -4,6 +4,7 @@ param(
     [ValidateScript({ Test-Path -LiteralPath $_ -PathType Leaf })]
     [string]$JobPath,
     [string]$CredentialPath = '',
+    [string]$HelpdeskCredentialPath = '',
     [string]$InitialPasswordPath = '',
     [ValidateSet('Job', 'WhatIf', 'Execute')]
     [string]$Mode = 'Job'
@@ -28,6 +29,7 @@ $runStatus = 'completed'
 $runError = ''
 $referenceLookup = $null
 $adCredential = $null
+$helpdeskCredential = $null
 $initialPassword = $null
 $script:CurrentAction = 'Initialisierung'
 
@@ -114,6 +116,14 @@ try {
         if ($initialPasswordCredential -isnot [Management.Automation.PSCredential]) { throw 'The supplied initial user password could not be read.' }
         $initialPassword = $initialPasswordCredential.Password
         $initialPasswordCredential = $null
+    }
+    if ($HelpdeskCredentialPath) {
+        try {
+            $helpdeskCredential = Import-Clixml -LiteralPath $HelpdeskCredentialPath
+        } finally {
+            Remove-Item -LiteralPath $HelpdeskCredentialPath -Force -ErrorAction SilentlyContinue
+        }
+        if ($helpdeskCredential -isnot [Management.Automation.PSCredential]) { throw 'The supplied HelpDesk credential could not be read.' }
     }
     Add-RunLog 'AD-Verbindung pruefen' 'running' $job.directory.domain
     Import-Module ActiveDirectory -ErrorAction Stop
@@ -304,10 +314,11 @@ try {
                 'CreateHelpdeskTicket' {
                     if ($Mode -eq 'WhatIf') { Add-RunLog $actionType 'simulated' $job.helpdesk.subject; Add-Change 'Helpdesk-Ticket erstellen' 'Helpdesk-Ticket' $job.helpdesk.subject "Vorgang fuer $($job.person.displayName)" $null $job.helpdesk.text 'manual' 'simulated'; break }
                     $body = @{ text = $job.helpdesk.text; htmlContent = $false; ticketFields = @{ subject = $job.helpdesk.subject }; actionArguments = @{} } | ConvertTo-Json -Depth 8
+                    if (-not $helpdeskCredential) { throw 'Fuer das HelpDesk-Ticket wurde keine separate Windows-Anmeldung uebergeben.' }
                     try {
-                        $ticket = Invoke-RestMethod -Uri "$($job.helpdesk.baseUrl.TrimEnd('/'))/api/ticket/create" -Method Post -Credential $adCredential -ContentType 'application/json; charset=utf-8' -Body $body -TimeoutSec 60
+                        $ticket = Invoke-RestMethod -Uri "$($job.helpdesk.baseUrl.TrimEnd('/'))/api/ticket/create" -Method Post -Credential $helpdeskCredential -ContentType 'application/json; charset=utf-8' -Body $body -TimeoutSec 60
                     } catch {
-                        throw "HelpDesk-Ticket konnte nicht erstellt werden. Windows-Anmeldung mit dem angegebenen AD-Konto wurde abgelehnt oder die API ist nicht erreichbar: $($_.Exception.Message)"
+                        throw "HelpDesk-Ticket konnte nicht erstellt werden. Die separate HelpDesk-Windows-Anmeldung wurde abgelehnt oder die API ist nicht erreichbar: $($_.Exception.Message)"
                     }
                     $ticketId = if ($ticket -is [ValueType] -or $ticket -is [string]) { [string]$ticket } elseif ($ticket.PSObject.Properties['id']) { [string]$ticket.id } elseif ($ticket.PSObject.Properties['ticketId']) { [string]$ticket.ticketId } else { $job.helpdesk.subject }
                     Add-RunLog $actionType 'completed' "Ticket: $ticketId"
@@ -323,8 +334,10 @@ try {
     Add-RunLog 'Run failed' 'failed' $runError
 } finally {
     if ($CredentialPath) { Remove-Item -LiteralPath $CredentialPath -Force -ErrorAction SilentlyContinue }
+    if ($HelpdeskCredentialPath) { Remove-Item -LiteralPath $HelpdeskCredentialPath -Force -ErrorAction SilentlyContinue }
     if ($InitialPasswordPath) { Remove-Item -LiteralPath $InitialPasswordPath -Force -ErrorAction SilentlyContinue }
     $adCredential = $null
+    $helpdeskCredential = $null
     $initialPassword = $null
     $completedAt = Get-Date
     [string[]]$automationTaskIds = @()

@@ -878,30 +878,47 @@ function AdCredentialDialog({
   title,
   onSubmit,
   requireInitialPassword = false,
+  requireHelpdeskCredential = false,
 }: {
   open: boolean;
   setOpen: (value: boolean) => void;
   title: string;
-  onSubmit: (credential: AdCredential, initialPassword?: string) => void;
+  onSubmit: (
+    credential: AdCredential,
+    initialPassword?: string,
+    helpdeskCredential?: AdCredential,
+  ) => void;
   requireInitialPassword?: boolean;
+  requireHelpdeskCredential?: boolean;
 }) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [initialPassword, setInitialPassword] = useState("");
+  const [helpdeskUsername, setHelpdeskUsername] = useState("");
+  const [helpdeskPassword, setHelpdeskPassword] = useState("");
   function submit(event: FormEvent) {
     event.preventDefault();
     if (
       !username.trim() ||
       !password ||
-      (requireInitialPassword && !initialPassword)
+      (requireInitialPassword && !initialPassword) ||
+      (requireHelpdeskCredential &&
+        (!helpdeskUsername.trim() || !helpdeskPassword))
     )
       return;
     onSubmit(
       { username: username.trim(), password },
       requireInitialPassword ? initialPassword : undefined,
+      requireHelpdeskCredential
+        ? {
+            username: helpdeskUsername.trim(),
+            password: helpdeskPassword,
+          }
+        : undefined,
     );
     setPassword("");
     setInitialPassword("");
+    setHelpdeskPassword("");
     setOpen(false);
   }
   return (
@@ -911,11 +928,12 @@ function AdCredentialDialog({
         if (!next) {
           setPassword("");
           setInitialPassword("");
+          setHelpdeskPassword("");
         }
         setOpen(next);
       }}
     >
-      <DialogContent>
+      <DialogContent className="max-h-[90vh] overflow-y-auto">
         <form onSubmit={submit} className="space-y-5">
           <DialogHeader>
             <DialogTitle>{title}</DialogTitle>
@@ -941,6 +959,21 @@ function AdCredentialDialog({
                 autoFocus
               />
             </div>
+            <div>
+              <label
+                className="mb-1.5 block text-sm font-medium"
+                htmlFor="ad-password"
+              >
+                AD-Kennwort
+              </label>
+              <Input
+                id="ad-password"
+                type="password"
+                autoComplete="current-password"
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
+              />
+            </div>
             {requireInitialPassword && (
               <div className="rounded-xl border border-[#dce3e7] bg-[#f8fafb] p-4">
                 <label
@@ -963,21 +996,53 @@ function AdCredentialDialog({
                 </p>
               </div>
             )}
-            <div>
-              <label
-                className="mb-1.5 block text-sm font-medium"
-                htmlFor="ad-password"
-              >
-                Kennwort
-              </label>
-              <Input
-                id="ad-password"
-                type="password"
-                autoComplete="current-password"
-                value={password}
-                onChange={(event) => setPassword(event.target.value)}
-              />
-            </div>
+            {requireHelpdeskCredential && (
+              <div className="space-y-3 rounded-xl border border-sky-200 bg-sky-50 p-4">
+                <div>
+                  <p className="text-sm font-medium text-sky-950">
+                    Windows-Anmeldung für i-net HelpDesk
+                  </p>
+                  <p className="mt-1 text-xs leading-5 text-sky-800">
+                    Hier das normale Domänenkonto mit HelpDesk-Rechten
+                    eintragen. Es wird nur für die Ticketerstellung verwendet.
+                  </p>
+                </div>
+                <div>
+                  <label
+                    className="mb-1.5 block text-sm font-medium"
+                    htmlFor="helpdesk-username"
+                  >
+                    HelpDesk-Benutzername
+                  </label>
+                  <Input
+                    id="helpdesk-username"
+                    autoComplete="off"
+                    value={helpdeskUsername}
+                    onChange={(event) =>
+                      setHelpdeskUsername(event.target.value)
+                    }
+                    placeholder="KAUTH\\vinzent.niederwieser"
+                  />
+                </div>
+                <div>
+                  <label
+                    className="mb-1.5 block text-sm font-medium"
+                    htmlFor="helpdesk-password"
+                  >
+                    HelpDesk-Kennwort
+                  </label>
+                  <Input
+                    id="helpdesk-password"
+                    type="password"
+                    autoComplete="off"
+                    value={helpdeskPassword}
+                    onChange={(event) =>
+                      setHelpdeskPassword(event.target.value)
+                    }
+                  />
+                </div>
+              </div>
+            )}
             <div className="flex gap-2 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
               <ShieldCheck className="mt-0.5 size-4 shrink-0" />
               <span>
@@ -1000,7 +1065,9 @@ function AdCredentialDialog({
               disabled={
                 !username.trim() ||
                 !password ||
-                (requireInitialPassword && !initialPassword)
+                (requireInitialPassword && !initialPassword) ||
+                (requireHelpdeskCredential &&
+                  (!helpdeskUsername.trim() || !helpdeskPassword))
               }
               className="bg-[#176b87] text-white hover:bg-[#12566d]"
             >
@@ -1082,6 +1149,7 @@ function AutomationsView({
     mode: "WhatIf" | "Execute",
     adCredential: AdCredential,
     initialPassword?: string,
+    helpdeskCredential?: AdCredential,
   ) {
     if (!job) return;
     if (invalidExistingComputer) {
@@ -1109,6 +1177,7 @@ function AutomationsView({
           requestedMode: mode,
           adCredential,
           ...(initialPassword ? { initialPassword } : {}),
+          ...(helpdeskCredential ? { helpdeskCredential } : {}),
         }),
       });
       const data = (await response.json()) as ApiMessage;
@@ -1175,9 +1244,16 @@ function AutomationsView({
   function submitCredentials(
     credential: AdCredential,
     initialPassword?: string,
+    helpdeskCredential?: AdCredential,
   ) {
     if (credentialAction === "reference") void checkReference(credential);
-    else void requestRun(credentialAction, credential, initialPassword);
+    else
+      void requestRun(
+        credentialAction,
+        credential,
+        initialPassword,
+        helpdeskCredential,
+      );
   }
   function selectEmployee(person: EmployeeRecord) {
     setComputerAssignments({});
@@ -1204,6 +1280,14 @@ function AutomationsView({
           credentialAction === "Execute" &&
           job?.lifecycleType !== "offboarding" &&
           Boolean(job?.actions.some((action) => action.type === "CreateAdUser"))
+        }
+        requireHelpdeskCredential={
+          credentialAction === "Execute" &&
+          Boolean(
+            job?.actions.some(
+              (action) => action.type === "CreateHelpdeskTicket",
+            ),
+          )
         }
         onSubmit={submitCredentials}
       />

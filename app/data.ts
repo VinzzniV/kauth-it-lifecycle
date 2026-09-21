@@ -867,7 +867,7 @@ if ($WhatIfMode) {
     Write-Host $TicketText
 } elseif ($PSCmdlet.ShouldProcess('${q(job.helpdesk.baseUrl)}', 'HelpDesk-Ticket erstellen')) {
     $Body = @{ text = $TicketText; htmlContent = $false; ticketFields = @{ subject = '${q(job.helpdesk.subject)}' }; actionArguments = @{} } | ConvertTo-Json -Depth 8
-    Invoke-RestMethod -Uri '${q(job.helpdesk.baseUrl)}/api/ticket/create' -Method Post -Credential $Credential -ContentType 'application/json; charset=utf-8' -Body $Body -TimeoutSec 60
+    Invoke-RestMethod -Uri '${q(job.helpdesk.baseUrl)}/api/ticket/create' -Method Post -Credential $HelpDeskCredential -ContentType 'application/json; charset=utf-8' -Body $Body -TimeoutSec 60
 }`;
 
   if (job.lifecycleType === "offboarding") {
@@ -879,6 +879,7 @@ $ErrorActionPreference = 'Stop'
 $WhatIfMode = $Mode -eq 'WhatIf'
 Import-Module ActiveDirectory
 $Credential = Get-Credential -Message 'Delegiertes AD-Konto eingeben'
+$HelpDeskCredential = if ($WhatIfMode) { $null } else { Get-Credential -Message 'Normales Windows-Konto mit i-net-HelpDesk-Rechten eingeben' }
 $AdConnection = @{ Server = '${q(job.directory.domain)}'; Credential = $Credential; ErrorAction = 'Stop' }
 $User = Get-ADUser -Identity '${q(job.directory.samAccountName)}' -Properties MemberOf,Enabled,DistinguishedName @AdConnection
 
@@ -943,6 +944,7 @@ Import-Module ActiveDirectory
 
 # Zugangsdaten werden nur auf PK-SRVMGMT002 abgefragt und nicht gespeichert.
 $Credential = Get-Credential -Message 'Delegiertes AD-Konto eingeben'
+$HelpDeskCredential = if ($WhatIfMode) { $null } else { Get-Credential -Message 'Normales Windows-Konto mit i-net-HelpDesk-Rechten eingeben' }
 $InitialPassword = Read-Host -AsSecureString 'Initiales Kennwort fuer den neuen Mitarbeiter eingeben'
 $AdConnection = @{ Server = '${q(job.directory.domain)}'; Credential = $Credential; ErrorAction = 'Stop' }
 $SamAccountName = '${q(job.directory.samAccountName)}'

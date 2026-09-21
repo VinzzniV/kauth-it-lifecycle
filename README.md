@@ -61,7 +61,7 @@ Das Update lädt ausschließlich freigegebene Änderungen, baut das Docker-Image
 ## Sicherheit
 
 - `.env` enthält Geheimnisse und ist von Git ausgeschlossen.
-- AD-Zugangsdaten und das nur bei Benutzerneuanlagen benötigte Initialkennwort werden pro Auftrag übergeben, im Gateway sofort aus der Jobdatei entfernt und nur kurzzeitig DPAPI-geschützt an den Agenten weitergereicht. Das Initialkennwort aktiviert das Konto und muss bei der ersten Anmeldung geändert werden.
-- Die HelpDesk-API verwendet dieselbe Windows-Anmeldung wie der AD-Lauf; es gibt kein zweites HelpDesk-Konto. Für die Übertragung der Zugangsdaten ist HTTPS außerhalb isolierter Tests erforderlich.
+- AD-Zugangsdaten, die getrennte Windows-Anmeldung für i-net HelpDesk und das nur bei Benutzerneuanlagen benötigte Initialkennwort werden pro Auftrag übergeben, im Gateway sofort aus der Jobdatei entfernt und nur kurzzeitig DPAPI-geschützt an den Agenten weitergereicht. Das Initialkennwort aktiviert das Konto und muss bei der ersten Anmeldung geändert werden.
+- Das AD-Konto wird ausschließlich für Active Directory verwendet. Für die HelpDesk-API wird beim echten Lauf ein normales Domänenkonto mit HelpDesk-Rechten separat eingegeben. Beide Kennwörter werden nach dem Lauf verworfen. Für die Übertragung der Zugangsdaten ist HTTPS außerhalb isolierter Tests erforderlich.
 - Für den produktiven Betrieb sollte statt Domain Admin ein delegiertes Konto mit den tatsächlich benötigten Rechten verwendet werden.
 - Helpdesk-Tickets werden protokolliert, aber mangels bestätigter Storno-API nicht automatisch zurückgenommen.

@@ -43,6 +43,7 @@ const jobSchema = z.discriminatedUnion("operation", [
         })
         .passthrough(),
       adCredential: adCredentialSchema,
+      helpdeskCredential: adCredentialSchema.optional(),
       initialPassword: z.string().min(1).max(512).optional(),
       helpdesk: z.object({
         baseUrl: z.string(),
@@ -98,6 +99,19 @@ export async function POST(request: Request) {
         {
           error:
             "Für die aktivierte Benutzeranlage fehlt das initiale Benutzerkennwort.",
+        },
+        { status: 400 },
+      );
+    if (
+      job.operation === "execute" &&
+      job.requestedMode === "Execute" &&
+      job.actions.some((action) => action.type === "CreateHelpdeskTicket") &&
+      !job.helpdeskCredential
+    )
+      return Response.json(
+        {
+          error:
+            "Für das HelpDesk-Ticket fehlt die separate Windows-Anmeldung eines HelpDesk-berechtigten Kontos.",
         },
         { status: 400 },
       );

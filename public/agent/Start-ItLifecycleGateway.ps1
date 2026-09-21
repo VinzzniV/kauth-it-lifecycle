@@ -160,12 +160,18 @@ try {
                 continue
             }
             $credentialPath = ''
+            $helpdeskCredentialPath = ''
             $initialPasswordPath = ''
             try {
                 if ($job.PSObject.Properties['adCredential']) {
                     $credentialPath = Join-Path $QueuePath "$safeJobId.ad.credential.xml"
                     Export-TransientCredential $job.adCredential $credentialPath
                     $job.PSObject.Properties.Remove('adCredential')
+                }
+                if ($job.PSObject.Properties['helpdeskCredential']) {
+                    $helpdeskCredentialPath = Join-Path $QueuePath "$safeJobId.helpdesk.credential.xml"
+                    Export-TransientCredential $job.helpdeskCredential $helpdeskCredentialPath
+                    $job.PSObject.Properties.Remove('helpdeskCredential')
                 }
                 if ($job.PSObject.Properties['initialPassword']) {
                     $initialPasswordPath = Join-Path $QueuePath "$safeJobId.initial-password.credential.xml"
@@ -181,17 +187,20 @@ try {
                 $job | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $jobPath -Encoding UTF8
             } catch {
                 if ($credentialPath) { Remove-Item -LiteralPath $credentialPath -Force -ErrorAction SilentlyContinue }
+                if ($helpdeskCredentialPath) { Remove-Item -LiteralPath $helpdeskCredentialPath -Force -ErrorAction SilentlyContinue }
                 if ($initialPasswordPath) { Remove-Item -LiteralPath $initialPasswordPath -Force -ErrorAction SilentlyContinue }
                 throw
             }
             $agentArguments = @('-NoProfile', '-ExecutionPolicy', 'RemoteSigned', '-File', $agentPath, '-JobPath', $jobPath, '-Mode', $job.requestedMode)
             if ($credentialPath) { $agentArguments += @('-CredentialPath', $credentialPath) }
+            if ($helpdeskCredentialPath) { $agentArguments += @('-HelpdeskCredentialPath', $helpdeskCredentialPath) }
             if ($initialPasswordPath) { $agentArguments += @('-InitialPasswordPath', $initialPasswordPath) }
             try {
                 $agentProcess = Start-Process -FilePath 'powershell.exe' -ArgumentList $agentArguments -WindowStyle Hidden -PassThru
                 $runningJobs[$safeJobId] = $agentProcess
             } catch {
                 if ($credentialPath) { Remove-Item -LiteralPath $credentialPath -Force -ErrorAction SilentlyContinue }
+                if ($helpdeskCredentialPath) { Remove-Item -LiteralPath $helpdeskCredentialPath -Force -ErrorAction SilentlyContinue }
                 if ($initialPasswordPath) { Remove-Item -LiteralPath $initialPasswordPath -Force -ErrorAction SilentlyContinue }
                 throw
             }
