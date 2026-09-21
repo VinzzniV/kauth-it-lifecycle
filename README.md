@@ -27,6 +27,23 @@ PowerShell -ExecutionPolicy Bypass -File .\Start-Local.ps1
 
 Die Anwendung ist anschließend standardmäßig unter `http://localhost:8080` erreichbar.
 
+## Eine zentrale Konfiguration
+
+Docker, Windows-Gateway und M365-Verbindungstest lesen gemeinsam die lokale Datei `.env`. Der Einrichtungsassistent erklärt die Herkunft der Werte, übernimmt vorhandene Angaben und erzeugt Web-Kennwort sowie Gateway-Token automatisch:
+
+```powershell
+.\Configure-ItLifecycle.ps1
+```
+
+Danach genügen für den Betrieb:
+
+```powershell
+.\Update-Server.ps1
+.\public\agent\Start-ItLifecycleGateway.ps1
+```
+
+Der Gateway fragt nicht mehr separat nach dem Token oder den vier M365-Werten. `.env` bleibt ausschließlich auf dem jeweiligen Rechner und wird von Git ignoriert.
+
 Auf dem Windows-Jobserver muss das Active-Directory-PowerShell-Modul installiert sein. Unter Windows Server geschieht das in einer administrativen PowerShell mit:
 
 ```powershell

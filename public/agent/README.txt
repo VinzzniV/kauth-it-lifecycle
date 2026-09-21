@@ -45,14 +45,11 @@ Install the certificate including its private key into Cert:\CurrentUser\My for 
     -Organization '<tenant>.onmicrosoft.com' `
     -InstallMissingModules
 
-Start the gateway with the same non-secret identifiers. The certificate private key remains in the Windows certificate store:
+Store the values once in the repository-root .env by running .\Configure-ItLifecycle.ps1. Docker, the gateway and the test script then use the same local source. The certificate private key remains in the Windows certificate store.
 
-  .\public\agent\Start-ItLifecycleGateway.ps1 `
-    -ListenPrefix 'http://+:8788/' `
-    -M365TenantId '<tenant-guid>' `
-    -M365ClientId '<app-guid>' `
-    -M365CertificateThumbprint '<thumbprint>' `
-    -M365Organization '<tenant>.onmicrosoft.com'
+  .\Configure-ItLifecycle.ps1
+  .\public\agent\Test-M365Automation.ps1
+  .\public\agent\Start-ItLifecycleGateway.ps1
 
 The AD credential supplied for the run is used only for AD and the PowerShell remoting call to PK-SRVMGMT001. WinRM from the jobserver to PK-SRVMGMT001 must be enabled, and that account must be permitted to run Start-ADSyncSyncCycle there.
 - Rollback reverses only changes recorded by that exact execution. Helpdesk tickets without a confirmed cancellation API remain documented as manual follow-up.

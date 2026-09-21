@@ -23,6 +23,10 @@ if (-not (Test-Path -LiteralPath $envPath)) {
         "APP_PASSWORD=$password"
         'MANAGEMENT_AGENT_URL=http://host.docker.internal:8788'
         "MANAGEMENT_AGENT_TOKEN=$token"
+        'M365_TENANT_ID='
+        'M365_CLIENT_ID='
+        'M365_CERT_THUMBPRINT='
+        'M365_ORGANIZATION='
     ) | Set-Content -LiteralPath $envPath -Encoding UTF8
     Write-Host "Lokale Zugangsdaten: itadmin / $password" -ForegroundColor Yellow
     Write-Host 'Die Daten wurden zusätzlich in .env gespeichert.' -ForegroundColor DarkGray
@@ -33,4 +37,5 @@ if ($Rebuild) { $arguments += '--build' } else { $arguments += @('--build', '--p
 & docker @arguments
 if ($LASTEXITCODE -ne 0) { throw 'Der Docker-Start ist fehlgeschlagen.' }
 Write-Host 'IT Lifecycle V1 läuft unter http://localhost:8080' -ForegroundColor Green
-Write-Host 'Agent separat starten: .\public\agent\Start-ItLifecycleGateway.ps1 -ListenPrefix http://+:8788/' -ForegroundColor Cyan
+Write-Host 'Konfiguration bearbeiten: .\Configure-ItLifecycle.ps1' -ForegroundColor Cyan
+Write-Host 'Agent separat starten: .\public\agent\Start-ItLifecycleGateway.ps1' -ForegroundColor Cyan

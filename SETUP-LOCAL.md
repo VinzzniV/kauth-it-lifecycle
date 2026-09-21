@@ -9,18 +9,18 @@
 
 1. Docker Desktop starten.
 2. PowerShell im Projektordner öffnen.
-3. `PowerShell -ExecutionPolicy Bypass -File .\Start-Local.ps1` ausführen.
-4. Die ausgegebenen Zugangsdaten notieren und `http://localhost:8080` öffnen.
+3. Einmalig `.\Configure-ItLifecycle.ps1` ausführen. Der Assistent zeigt dabei, wo die Entra-, Zertifikat- und Exchange-Werte zu finden sind.
+4. `PowerShell -ExecutionPolicy Bypass -File .\Start-Local.ps1` ausführen.
+5. `http://localhost:8080` öffnen.
 
 Die Datenbank liegt in einem Docker-Volume und bleibt bei Neustarts oder Image-Updates erhalten.
 
 ## AD-Agent für lokale Tests
 
-1. Den Wert `MANAGEMENT_AGENT_TOKEN` aus `.env` kopieren.
-2. PowerShell als Administrator öffnen.
-3. Falls nötig einmalig die URL reservieren: `netsh http add urlacl url=http://+:8788/ user=Jeder`.
-4. `PowerShell -ExecutionPolicy RemoteSigned -File .\public\agent\Start-ItLifecycleGateway.ps1 -ListenPrefix http://+:8788/` starten.
-5. Den Token eingeben und das Fenster geöffnet lassen.
+1. PowerShell als Administrator öffnen.
+2. Falls nötig einmalig die URL reservieren: `netsh http add urlacl url=http://+:8788/ user=Jeder`.
+3. `PowerShell -ExecutionPolicy RemoteSigned -File .\public\agent\Start-ItLifecycleGateway.ps1` starten.
+4. Das Fenster geöffnet lassen. Token und M365-Werte werden automatisch aus der zentralen `.env` gelesen.
 
 Vor Referenzprüfung, WhatIf, Ausführung und Rollback fragt die Weboberfläche nach den AD-Zugangsdaten. Der Gateway wandelt sie sofort in eine mit Windows DPAPI geschützte, temporäre Credential-Datei um. Der Agent liest und löscht diese Datei beim Start; Zugangsdaten werden weder in der Jobdatei noch in Datenbank oder Ergebnis gespeichert. Ohne mitgelieferte Zugangsdaten bleibt die lokale PowerShell-Abfrage als Rückfall erhalten.
 

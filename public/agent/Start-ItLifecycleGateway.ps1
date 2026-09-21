@@ -1,15 +1,24 @@
 [CmdletBinding()]
 param(
-    [string]$ListenPrefix = 'http://localhost:8788/',
+    [string]$ListenPrefix = 'http://+:8788/',
     [string]$QueuePath = "$env:ProgramData\Kauth\ITLifecycle\Queue",
-    [string]$M365TenantId = $env:M365_TENANT_ID,
-    [string]$M365ClientId = $env:M365_CLIENT_ID,
-    [string]$M365CertificateThumbprint = $env:M365_CERT_THUMBPRINT,
-    [string]$M365Organization = $env:M365_ORGANIZATION
+    [string]$ConfigurationPath = (Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) '.env'),
+    [string]$M365TenantId = '',
+    [string]$M365ClientId = '',
+    [string]$M365CertificateThumbprint = '',
+    [string]$M365Organization = ''
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+$envLoaderPath = Join-Path $PSScriptRoot 'Import-ItLifecycleEnv.ps1'
+if (-not (Test-Path -LiteralPath $envLoaderPath)) { throw "Konfigurationslader fehlt: $envLoaderPath" }
+. $envLoaderPath
+$configuration = Import-ItLifecycleEnv -Path $ConfigurationPath
+if (-not $M365TenantId) { $M365TenantId = $env:M365_TENANT_ID }
+if (-not $M365ClientId) { $M365ClientId = $env:M365_CLIENT_ID }
+if (-not $M365CertificateThumbprint) { $M365CertificateThumbprint = $env:M365_CERT_THUMBPRINT }
+if (-not $M365Organization) { $M365Organization = $env:M365_ORGANIZATION }
 $env:M365_TENANT_ID = $M365TenantId
 $env:M365_CLIENT_ID = $M365ClientId
 $env:M365_CERT_THUMBPRINT = $M365CertificateThumbprint
@@ -69,13 +78,17 @@ function Write-FailedResult {
     $failedResult | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $resultPath -Encoding UTF8
 }
 
-$secureToken = Read-Host 'Gateway token (same value as MANAGEMENT_AGENT_TOKEN in Sites)' -AsSecureString
-$token = [Net.NetworkCredential]::new('', $secureToken).Password
+$token = [string]$env:MANAGEMENT_AGENT_TOKEN
+if ([string]::IsNullOrWhiteSpace($token)) {
+    $secureToken = Read-Host 'Gateway-Token (MANAGEMENT_AGENT_TOKEN fehlt in .env)' -AsSecureString
+    $token = [Net.NetworkCredential]::new('', $secureToken).Password
+}
 if ([string]::IsNullOrWhiteSpace($token)) { throw 'A gateway token is required.' }
 
 $listener = [Net.HttpListener]::new()
 $listener.Prefixes.Add($ListenPrefix)
 $listener.Start()
+Write-Host "Konfiguration: $ConfigurationPath" -ForegroundColor DarkGray
 Write-Host "IT Lifecycle Gateway listening on $ListenPrefix" -ForegroundColor Cyan
 Write-Host 'Keep this window open. WhatIf, Execute and rollback jobs are accepted.' -ForegroundColor DarkGray
 

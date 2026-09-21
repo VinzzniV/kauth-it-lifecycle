@@ -1,15 +1,31 @@
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory = $true)][string]$TenantId,
-    [Parameter(Mandatory = $true)][string]$ClientId,
-    [Parameter(Mandatory = $true)][string]$CertificateThumbprint,
-    [Parameter(Mandatory = $true)][string]$Organization,
+    [string]$ConfigurationPath = (Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) '.env'),
+    [string]$TenantId = '',
+    [string]$ClientId = '',
+    [string]$CertificateThumbprint = '',
+    [string]$Organization = '',
     [string]$SkuPartNumber = 'SPB',
     [switch]$InstallMissingModules
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+$envLoaderPath = Join-Path $PSScriptRoot 'Import-ItLifecycleEnv.ps1'
+if (-not (Test-Path -LiteralPath $envLoaderPath)) { throw "Konfigurationslader fehlt: $envLoaderPath" }
+. $envLoaderPath
+$configuration = Import-ItLifecycleEnv -Path $ConfigurationPath
+if (-not $TenantId) { $TenantId = $env:M365_TENANT_ID }
+if (-not $ClientId) { $ClientId = $env:M365_CLIENT_ID }
+if (-not $CertificateThumbprint) { $CertificateThumbprint = $env:M365_CERT_THUMBPRINT }
+if (-not $Organization) { $Organization = $env:M365_ORGANIZATION }
+$missingSettings = @(
+    if ([string]::IsNullOrWhiteSpace($TenantId)) { 'M365_TENANT_ID' }
+    if ([string]::IsNullOrWhiteSpace($ClientId)) { 'M365_CLIENT_ID' }
+    if ([string]::IsNullOrWhiteSpace($CertificateThumbprint)) { 'M365_CERT_THUMBPRINT' }
+    if ([string]::IsNullOrWhiteSpace($Organization)) { 'M365_ORGANIZATION' }
+)
+if ($missingSettings.Count -gt 0) { throw "Folgende Werte fehlen in $ConfigurationPath`: $($missingSettings -join ', ')" }
 $requiredModules = @(
     'Microsoft.Graph.Authentication',
     'Microsoft.Graph.Users',
