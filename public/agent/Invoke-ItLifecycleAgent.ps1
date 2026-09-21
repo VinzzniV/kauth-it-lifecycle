@@ -32,7 +32,12 @@ $adCredential = $null
 $helpdeskCredential = $null
 $initialPassword = $null
 $script:CurrentAction = 'Initialisierung'
-$requiresAdCredential = $operation -in @('rollback', 'reference_check') -or @($job.actions | Where-Object { $_.type -ne 'CreateHelpdeskTicket' }).Count -gt 0
+$actionTypes = @($job.actions | ForEach-Object { [string]$_.type })
+$requiresAdCredential = $operation -in @('rollback', 'reference_check') -or @($actionTypes | Where-Object { $_ -ne 'CreateHelpdeskTicket' }).Count -gt 0
+# M365 provisioning needs the supplied credential only for PowerShell remoting to
+# the ADSync server. It does not use AD cmdlets, so a targeted retry must not fail
+# early because of the generic AD Web Services connectivity check.
+$requiresDirectoryConnection = $operation -in @('rollback', 'reference_check') -or @($actionTypes | Where-Object { $_ -notin @('CreateHelpdeskTicket', 'ProvisionM365Mailbox') }).Count -gt 0
 
 function Write-ProgressSnapshot {
     $temporaryPath = "$progressPath.tmp"
@@ -126,7 +131,7 @@ try {
         }
         if ($helpdeskCredential -isnot [Management.Automation.PSCredential]) { throw 'The supplied HelpDesk credential could not be read.' }
     }
-    if ($requiresAdCredential) {
+    if ($requiresDirectoryConnection) {
         Add-RunLog 'AD-Verbindung pruefen' 'running' $job.directory.domain
         Import-Module ActiveDirectory -ErrorAction Stop
         $null = Get-ADDomain -Identity $job.directory.domain -Server $job.directory.domain -Credential $adCredential
@@ -344,10 +349,14 @@ try {
                         Connect-MgGraph -TenantId $env:M365_TENANT_ID -ClientId $env:M365_CLIENT_ID -CertificateThumbprint $env:M365_CERT_THUMBPRINT -NoWelcome
                         $graphConnected = $true
                         Add-RunLog $actionType 'running' "Delta-Synchronisierung auf $syncServer wird gestartet."
-                        Invoke-Command -ComputerName $syncServer -Credential $adCredential -ErrorAction Stop -ScriptBlock {
-                            Import-Module ADSync -ErrorAction Stop
-                            Start-ADSyncSyncCycle -PolicyType Delta -InteractiveMode $false
-                        } | Out-Null
+                        try {
+                            Invoke-Command -ComputerName $syncServer -Credential $adCredential -ErrorAction Stop -ScriptBlock {
+                                Import-Module ADSync -ErrorAction Stop
+                                Start-ADSyncSyncCycle -PolicyType Delta -InteractiveMode $false
+                            } | Out-Null
+                        } catch {
+                            throw "ADSync auf '$syncServer' konnte mit dem angegebenen AD-Konto nicht gestartet werden. Pruefe Benutzername im Format KAUTH\benutzername, Kennwort, WinRM-Berechtigung und ADSync-Rechte. Ursache: $($_.Exception.Message)"
+                        }
                         Add-RunLog $actionType 'running' "Warte auf Entra-ID-Benutzer $upn."
                         $userSyncTimeoutMinutes = [int]$job.microsoft365.userSyncTimeoutMinutes
                         $userDeadline = (Get-Date).AddMinutes($userSyncTimeoutMinutes)
