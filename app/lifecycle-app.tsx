@@ -157,7 +157,17 @@ const kindText: Record<MasterDataKind, string> = {
   application: "Anwendungen",
   task: "Aufgaben",
   ou: "OU-Zuordnung",
+  helpdesk: "HelpDesk",
 };
+function automationOptions(items: MasterDataItem[]) {
+  const helpdeskResource = items
+    .filter((item) => item.kind === "helpdesk" && item.active && item.value.trim())
+    .at(-1);
+  return {
+    portalBaseUrl: typeof window === "undefined" ? "" : window.location.origin,
+    helpdeskResource: helpdeskResource?.value,
+  };
+}
 function badgeClass(status: string) {
   if (["active", "completed", "done", "removed"].includes(status))
     return "border-emerald-200 bg-emerald-50 text-emerald-700";
@@ -595,6 +605,7 @@ export function LifecycleApp({ view = "overview" }: { view?: AppView }) {
                   setActive={(person) => setActiveId(person.id)}
                   openRecord={() => setDetailOpen(true)}
                   onRefresh={() => void refreshEmployees()}
+                  masterData={masterData}
                 />
               )}
               {view === "master-data" && (
@@ -626,6 +637,7 @@ export function LifecycleApp({ view = "overview" }: { view?: AppView }) {
           onTask={updateTask}
           onDelete={deleteEmployee}
           onRefresh={() => void refreshEmployees()}
+          masterData={masterData}
         />
       )}
     </div>
@@ -1094,12 +1106,14 @@ function AutomationsView({
   setActive,
   openRecord,
   onRefresh,
+  masterData,
 }: {
   employees: EmployeeRecord[];
   active?: EmployeeRecord;
   setActive: (person: EmployeeRecord) => void;
   openRecord: () => void;
   onRefresh: () => void;
+  masterData: MasterDataItem[];
 }) {
   const [result, setResult] = useState("");
   const [latestExecution, setLatestExecution] =
@@ -1117,7 +1131,9 @@ function AutomationsView({
   >("WhatIf");
   const [computerAssignments, setComputerAssignments] =
     useState<ComputerAssignments>({});
-  const job = active ? buildAutomationJob(active, computerAssignments) : null;
+  const job = active
+    ? buildAutomationJob(active, computerAssignments, automationOptions(masterData))
+    : null;
   const invalidExistingComputer =
     job?.directory.computers.find(
       (computer) =>
@@ -1773,6 +1789,7 @@ function MasterDataView({
         <TabsTrigger value="application">Anwendungen</TabsTrigger>
         <TabsTrigger value="task">Aufgaben</TabsTrigger>
         <TabsTrigger value="ou">OU-Zuordnung</TabsTrigger>
+        <TabsTrigger value="helpdesk">HelpDesk</TabsTrigger>
       </TabsList>
       <div className="grid gap-6 xl:grid-cols-[minmax(0,1.4fr)_minmax(320px,.6fr)]">
         <Card className="overflow-hidden border-[#dce3e7] bg-white">
@@ -1831,7 +1848,11 @@ function MasterDataView({
               value={value}
               onChange={(e) => setValue(e.target.value)}
               placeholder={
-                kind === "ou" ? "Distinguished Name" : "Technischer Wert"
+                kind === "ou"
+                  ? "Distinguished Name"
+                  : kind === "helpdesk"
+                    ? "Ressourcenname oder GUID"
+                    : "Technischer Wert"
               }
             />
             <Input
@@ -2250,6 +2271,7 @@ function EmployeeDialog({
   onTask,
   onDelete,
   onRefresh,
+  masterData,
 }: {
   person: EmployeeRecord;
   open: boolean;
@@ -2261,8 +2283,12 @@ function EmployeeDialog({
   ) => void;
   onDelete: (person: EmployeeRecord) => void;
   onRefresh: () => void;
+  masterData: MasterDataItem[];
 }) {
-  const job = buildAutomationJob(person);
+  const job = buildAutomationJob(person, {}, automationOptions(masterData));
+  const statusUrl = person.shareToken && typeof window !== "undefined"
+    ? `${window.location.origin}/status/${person.shareToken}`
+    : "";
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogContent className="max-h-[92vh] overflow-y-auto p-0 sm:max-w-4xl">
@@ -2340,6 +2366,17 @@ function EmployeeDialog({
             </TabsTrigger>
           </TabsList>
           <TabsContent value="inventory">
+            {statusUrl && (
+              <div className="mb-4 flex flex-col gap-3 rounded-xl border border-[#bcdde1] bg-[#eef7f8] p-4 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <p className="font-medium text-[#12566d]">Freigegebene Statusansicht</p>
+                  <p className="mt-1 text-sm text-[#56727b]">Der Link zeigt Aufgaben, Zugänge und Fortschritt – ohne kritische IT-Aktionen.</p>
+                </div>
+                <a href={statusUrl} target="_blank" rel="noreferrer" className="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-[#8cc8cf] bg-white px-3 text-sm font-medium text-[#12566d] hover:bg-[#f8ffff]">
+                  <Link2 className="size-4" />Vorschau öffnen
+                </a>
+              </div>
+            )}
             <div className="grid gap-3 sm:grid-cols-2">
               {person.services.map((service) => (
                 <div
@@ -2422,6 +2459,7 @@ function EmployeeDialog({
                   person={person}
                   runs={person.automationRuns ?? []}
                   onRefresh={onRefresh}
+                  masterData={masterData}
                 />
               </div>
             </div>
@@ -2539,17 +2577,19 @@ function ExecutionHistory({
   person,
   runs,
   onRefresh,
+  masterData,
 }: {
   person: EmployeeRecord;
   runs: AutomationRun[];
   onRefresh: () => void;
+  masterData: MasterDataItem[];
 }) {
   const [message, setMessage] = useState("");
   const [rollbackRun, setRollbackRun] = useState<AutomationRun | null>(null);
   const [retryRun, setRetryRun] = useState<AutomationRun | null>(null);
   const retryActionType = retryRun ? failedAutomationAction(retryRun) : "";
   const availableActionTypes = new Set(
-    buildAutomationJob(person).actions.map((action) => action.type),
+    buildAutomationJob(person, {}, automationOptions(masterData)).actions.map((action) => action.type),
   );
   async function rollback(run: AutomationRun, adCredential: AdCredential) {
     setMessage("");
@@ -2576,7 +2616,7 @@ function ExecutionHistory({
     helpdeskCredential?: AdCredential,
   ) {
     const actionType = failedAutomationAction(run);
-    const preparedJob = buildAutomationJob(person);
+    const preparedJob = buildAutomationJob(person, {}, automationOptions(masterData));
     const actionIndex = preparedJob.actions.findIndex(
       (action) => action.type === actionType,
     );

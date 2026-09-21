@@ -4,7 +4,7 @@ import { getDb } from "../../../db";
 import { masterData } from "../../../db/schema";
 
 const itemSchema = z.object({
-  id: z.string().min(1), kind: z.enum(["group", "application", "task", "ou"]), label: z.string().min(1), value: z.string(), owner: z.string().min(1), active: z.boolean(),
+  id: z.string().min(1), kind: z.enum(["group", "application", "task", "ou", "helpdesk"]), label: z.string().min(1), value: z.string(), owner: z.string().min(1), active: z.boolean(),
 });
 
 export async function GET() {

@@ -24,4 +24,4 @@ export function middleware(request: Request) {
   return new Response("Anmeldung erforderlich.", { status: 401, headers: { "WWW-Authenticate": 'Basic realm="IT Lifecycle V1", charset="UTF-8"' } });
 }
 
-export const config = { matcher: ["/((?!api/health|favicon.svg|_next/).*)"] };
+export const config = { matcher: ["/((?!api/health|api/public/|status/|favicon.svg|_next/).*)"] };

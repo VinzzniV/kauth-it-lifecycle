@@ -321,7 +321,15 @@ try {
                 }
                 'CreateHelpdeskTicket' {
                     if ($Mode -eq 'WhatIf') { Add-RunLog $actionType 'simulated' $job.helpdesk.subject; Add-Change 'Helpdesk-Ticket erstellen' 'Helpdesk-Ticket' $job.helpdesk.subject "Vorgang fuer $($job.person.displayName)" $null $job.helpdesk.text 'manual' 'simulated'; break }
-                    $body = @{ text = $job.helpdesk.text; htmlContent = $false; ticketFields = @{ subject = $job.helpdesk.subject }; actionArguments = @{} } | ConvertTo-Json -Depth 8
+                    $ticketFields = @{ subject = $job.helpdesk.subject }
+                    $actionArguments = @{}
+                    if ($job.helpdesk.PSObject.Properties['resource'] -and $job.helpdesk.resource) {
+                        # Der lokalisierte Feldname wird von i-net akzeptiert. Der Wert kann je nach Installation
+                        # der Ressourcenname oder die Ressourcen-GUID sein.
+                        $ticketFields['Ressource'] = [string]$job.helpdesk.resource
+                        $actionArguments['ticketextension.dispatchNow'] = 'IF_RESOURCE_AVAILABLE'
+                    }
+                    $body = @{ text = $job.helpdesk.text; htmlContent = $false; ticketFields = $ticketFields; actionArguments = $actionArguments } | ConvertTo-Json -Depth 8
                     if (-not $helpdeskCredential) { throw 'Fuer das HelpDesk-Ticket wurde keine separate Windows-Anmeldung uebergeben.' }
                     try {
                         $ticket = Invoke-RestMethod -Uri "$($job.helpdesk.baseUrl.TrimEnd('/'))/api/ticket/create" -Method Post -Credential $helpdeskCredential -ContentType 'application/json; charset=utf-8' -Body $body -TimeoutSec 60

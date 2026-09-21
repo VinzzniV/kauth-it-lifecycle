@@ -51,6 +51,7 @@ const jobSchema = z.discriminatedUnion("operation", [
         baseUrl: z.string(),
         subject: z.string(),
         text: z.string(),
+        resource: z.string().max(500).optional(),
       }),
       actions: z.array(
         z.object({

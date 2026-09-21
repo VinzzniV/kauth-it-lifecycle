@@ -8,7 +8,7 @@ const taskSchema = z.object({ id: z.string(), eventType: z.string(), title: z.st
 const eventSchema = z.object({ id: z.string(), type: z.string(), status: z.string(), sourceFilename: z.string(), importedAt: z.string() });
 const employeeSchema = z.object({
   id: z.string(), personnelNumber: z.string().min(1), firstName: z.string(), lastName: z.string(), company: z.string(), department: z.string(), jobTitle: z.string(),
-  status: z.string(), startDate: z.string().nullable().optional(), endDate: z.string().nullable().optional(), directoryTargetOu: z.string().optional(), directoryReferenceUser: z.string().optional(), directoryReferenceStatus: z.string().optional(), directoryReferenceMessage: z.string().optional(), services: z.array(serviceSchema), tasks: z.array(taskSchema), events: z.array(eventSchema),
+  status: z.string(), startDate: z.string().nullable().optional(), endDate: z.string().nullable().optional(), directoryTargetOu: z.string().optional(), directoryReferenceUser: z.string().optional(), directoryReferenceStatus: z.string().optional(), directoryReferenceMessage: z.string().optional(), shareToken: z.string().optional(), services: z.array(serviceSchema), tasks: z.array(taskSchema), events: z.array(eventSchema),
 });
 
 function errorMessage(error: unknown) {
@@ -19,8 +19,15 @@ function errorMessage(error: unknown) {
 export async function GET() {
   try {
     const db = getDb();
-    const people = await db.select().from(employees).orderBy(desc(employees.updatedAt));
+    let people = await db.select().from(employees).orderBy(desc(employees.updatedAt));
     if (!people.length) return Response.json({ employees: [] });
+    const missingShareTokens = people.filter((person) => !person.shareToken);
+    if (missingShareTokens.length) {
+      for (const person of missingShareTokens) {
+        await db.update(employees).set({ shareToken: crypto.randomUUID().replaceAll("-", "") }).where(eq(employees.id, person.id));
+      }
+      people = await db.select().from(employees).orderBy(desc(employees.updatedAt));
+    }
     const ids = people.map((person) => person.id);
     const [allServices, allTasks, allEvents, allRuns] = await Promise.all([
       db.select().from(services).where(inArray(services.employeeId, ids)),
@@ -55,6 +62,7 @@ export async function POST(request: Request) {
       id: record.id, personnelNumber: record.personnelNumber, firstName: record.firstName, lastName: record.lastName, company: record.company,
       department: record.department, jobTitle: record.jobTitle, status: record.status, startDate: record.startDate, endDate: record.endDate, directoryTargetOu: record.directoryTargetOu ?? "",
       directoryReferenceUser: record.directoryReferenceUser ?? "", directoryReferenceStatus: record.directoryReferenceStatus ?? "", directoryReferenceMessage: record.directoryReferenceMessage ?? "",
+      shareToken: record.shareToken || crypto.randomUUID().replaceAll("-", ""),
       updatedAt: new Date().toISOString(),
     }).onConflictDoUpdate({ target: employees.personnelNumber, set: {
       firstName: record.firstName, lastName: record.lastName, company: record.company, department: record.department, jobTitle: record.jobTitle,

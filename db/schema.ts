@@ -10,6 +10,7 @@ export const employees = sqliteTable("employees", {
   directoryReferenceUser: text("directory_reference_user").notNull().default(""),
   directoryReferenceStatus: text("directory_reference_status").notNull().default(""),
   directoryReferenceMessage: text("directory_reference_message").notNull().default(""),
+  shareToken: text("share_token").notNull().default(""),
   startDate: text("start_date"), endDate: text("end_date"),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),

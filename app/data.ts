@@ -71,13 +71,19 @@ export type EmployeeRecord = {
   directoryReferenceUser?: string;
   directoryReferenceStatus?: string;
   directoryReferenceMessage?: string;
+  shareToken?: string;
   services: ServiceItem[];
   tasks: TaskItem[];
   events: LifecycleEvent[];
   automationRuns?: AutomationRun[];
 };
 
-export type MasterDataKind = "group" | "application" | "task" | "ou";
+export type MasterDataKind =
+  | "group"
+  | "application"
+  | "task"
+  | "ou"
+  | "helpdesk";
 export type MasterDataItem = {
   id: string;
   kind: MasterDataKind;
@@ -314,6 +320,7 @@ export type AutomationJob = {
     baseUrl: "http://pk-srvhlpdsk001:8002";
     subject: string;
     text: string;
+    resource?: string;
   };
   automationTaskIds: string[];
   actions: Array<{ type: string; target: string; requiresApproval: true }>;
@@ -508,6 +515,7 @@ function accountPart(value: string) {
 export function buildAutomationJob(
   person: EmployeeRecord,
   computerAssignments: ComputerAssignments = {},
+  options: { portalBaseUrl?: string; helpdeskResource?: string } = {},
 ): AutomationJob {
   const lifecycleType = person.events[0]?.type ?? "change";
   const samAccountName = `${accountPart(person.firstName)}.${accountPart(person.lastName)}`;
@@ -632,6 +640,31 @@ export function buildAutomationJob(
           "CreateHelpdeskTicket",
         ];
   const subject = `${lifecycleType === "offboarding" ? "Offboarding" : lifecycleType === "onboarding" ? "Onboarding" : "Wechsel"}: ${person.firstName} ${person.lastName}`;
+  const completedTasks = person.tasks.filter((task) => task.status === "done").length;
+  const taskLines = person.tasks.length
+    ? person.tasks.map((task) => {
+        const marker = task.status === "done" ? "[x]" : "[ ]";
+        const execution = task.executionType === "simulated" && task.status !== "done"
+          ? " (wird durch die Automation bearbeitet)"
+          : "";
+        return `${marker} ${task.title} - ${task.owner}${execution}`;
+      })
+    : ["Keine Aufgaben hinterlegt."];
+  const portalBaseUrl = options.portalBaseUrl?.replace(/\/$/, "");
+  const statusUrl = portalBaseUrl && person.shareToken
+    ? `${portalBaseUrl}/status/${person.shareToken}`
+    : "";
+  const ticketText = [
+    subject,
+    `Personalnummer: ${person.personnelNumber}`,
+    `Abteilung: ${person.department || "nicht angegeben"}`,
+    `Termin: ${lifecycleType === "offboarding" ? (person.endDate ?? "offen") : (person.startDate ?? "offen")}`,
+    `Quelle: ${person.events[0]?.sourceFilename ?? "Lifecycle-Portal"}`,
+    "",
+    `Aufgabenstand: ${completedTasks} von ${person.tasks.length} erledigt`,
+    ...taskLines,
+    ...(statusUrl ? ["", `Aktueller Stand im IT-Lifecycle: ${statusUrl}`] : []),
+  ].join("\n");
 
   return {
     schemaVersion: 1,
@@ -668,7 +701,8 @@ export function buildAutomationJob(
     helpdesk: {
       baseUrl: "http://pk-srvhlpdsk001:8002",
       subject,
-      text: `${subject}\nPersonalnummer: ${person.personnelNumber}\nAbteilung: ${person.department || "nicht angegeben"}\nTermin: ${lifecycleType === "offboarding" ? (person.endDate ?? "offen") : (person.startDate ?? "offen")}\nQuelle: ${person.events[0]?.sourceFilename ?? "Lifecycle-Portal"}`,
+      text: ticketText,
+      resource: options.helpdeskResource?.trim() || undefined,
     },
     automationTaskIds: person.tasks
       .filter(
@@ -870,7 +904,10 @@ if ($WhatIfMode) {
     Write-Host "WHATIF: HelpDesk-Ticket '${q(job.helpdesk.subject)}'"
     Write-Host $TicketText
 } elseif ($PSCmdlet.ShouldProcess('${q(job.helpdesk.baseUrl)}', 'HelpDesk-Ticket erstellen')) {
-    $Body = @{ text = $TicketText; htmlContent = $false; ticketFields = @{ subject = '${q(job.helpdesk.subject)}' }; actionArguments = @{} } | ConvertTo-Json -Depth 8
+    $TicketFields = @{ subject = '${q(job.helpdesk.subject)}' }
+    $ActionArguments = @{}
+    ${job.helpdesk.resource ? `$TicketFields['Ressource'] = '${q(job.helpdesk.resource)}'\n    $ActionArguments['ticketextension.dispatchNow'] = 'IF_RESOURCE_AVAILABLE'` : "# Keine HelpDesk-Ressource konfiguriert: Ticket bleibt als neue Anfrage sichtbar."}
+    $Body = @{ text = $TicketText; htmlContent = $false; ticketFields = $TicketFields; actionArguments = $ActionArguments } | ConvertTo-Json -Depth 8
     Invoke-RestMethod -Uri '${q(job.helpdesk.baseUrl)}/api/ticket/create' -Method Post -Credential $HelpDeskCredential -ContentType 'application/json; charset=utf-8' -Body $Body -TimeoutSec 60
 }`;
 

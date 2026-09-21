@@ -1,0 +1,1 @@
+ALTER TABLE `employees` ADD `share_token` text DEFAULT '' NOT NULL;
