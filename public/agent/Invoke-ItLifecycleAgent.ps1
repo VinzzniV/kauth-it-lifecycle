@@ -204,7 +204,7 @@ try {
         $existingUser = $null
         $referenceUser = $null
         $resolvedTargetOu = [string]$job.directory.targetOu
-        if ($requiresAdCredential) {
+        if ($requiresDirectoryConnection) {
             if ($job.directory.samAccountName -notmatch '^[a-z0-9.-]+$') { throw 'Invalid sAMAccountName in job.' }
             if ($Mode -eq 'Execute' -and $createUserRequested -and $job.lifecycleType -ne 'offboarding' -and $job.directory.targetOu -eq 'REVIEW_REQUIRED') { throw 'Select and approve a target OU in the job before running the agent.' }
             if ($Mode -eq 'Execute' -and $computerActionRequested -and @($job.directory.computers | Where-Object { $_.mode -ne 'existing' -and ($_.prefix -eq 'REVIEW_REQUIRED' -or $_.targetOu -eq 'REVIEW_REQUIRED') }).Count) { throw 'Select and approve the location and computer OU before running the agent.' }
