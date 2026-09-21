@@ -15,6 +15,7 @@ Interne Anwendung für das Einlesen von HR-Laufkarten, die Bearbeitung manueller
 - Live-Ablaufprotokoll während der Ausführung und verständliche Fehler je Arbeitsschritt
 - Docker-Betrieb mit lokaler Datenbank, persistentem Volume und Zugriffsschutz
 - Windows-Agent, der AD-Zugangsdaten pro Auftrag entgegennimmt und ohne versteckte Dialoge arbeitet
+- Hybride Postfachbereitstellung über Entra-Delta-Sync, Microsoft-365-Lizenzprüfung und Exchange Online
 
 ## Lokal starten
 
@@ -33,6 +34,8 @@ Install-WindowsFeature RSAT-AD-PowerShell
 ```
 
 Prüfen lässt sich die Installation mit `Get-Module -ListAvailable ActiveDirectory`.
+
+Für die unbeaufsichtigte Microsoft-365-Anmeldung wird eine Entra-App mit Zertifikat verwendet. Die vollständige Einrichtung und der mitgelieferte Verbindungstest stehen in [public/agent/README.txt](public/agent/README.txt).
 
 ## Entwicklung
 

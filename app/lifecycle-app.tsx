@@ -17,6 +17,7 @@ import {
   LayoutDashboard,
   Link2,
   ListChecks,
+  Mail,
   Plus,
   RotateCcw,
   Search,
@@ -138,6 +139,7 @@ const executionActionText: Record<string, string> = {
   RemoveGroupMemberships: "Gruppenmitgliedschaften entfernen",
   MoveAdUser: "AD-Benutzer verschieben",
   CreateHelpdeskTicket: "HelpDesk-Ticket erstellen",
+  ProvisionM365Mailbox: "Microsoft-365-Postfach bereitstellen",
   "AD-Verbindung pruefen": "AD-Verbindung prüfen",
   "Vorbedingungen pruefen": "Vorbedingungen prüfen",
   "Referenzbenutzer suchen": "Referenzbenutzer suchen",
@@ -1342,7 +1344,7 @@ function AutomationsView({
       </Card>
       {active && job && (
         <div className="space-y-5">
-          <div className="grid gap-4 md:grid-cols-3">
+          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
             <IntegrationCard
               icon={<Server />}
               title="Active Directory"
@@ -1356,6 +1358,13 @@ function AutomationsView({
               value="API-Auftrag"
               detail={job.helpdesk.subject}
               status="Vorbereitet"
+            />
+            <IntegrationCard
+              icon={<Mail />}
+              title="Microsoft 365"
+              value={job.actions.some((action) => action.type === "ProvisionM365Mailbox") ? "Postfach geplant" : "Nicht angefordert"}
+              detail="AD-Sync · SPB-Lizenz · Exchange Online"
+              status={job.actions.some((action) => action.type === "ProvisionM365Mailbox") ? "Automatisch" : "Übersprungen"}
             />
             <IntegrationCard
               icon={<KeyRound />}
@@ -1537,7 +1546,7 @@ function AutomationsView({
                   className="flex items-center gap-3 rounded-xl border border-[#e1e7ea] px-4 py-3"
                 >
                   <Check className="size-4 text-[#176b87]" />
-                  <span className="text-sm font-medium">{action.type}</span>
+                  <span className="text-sm font-medium">{executionActionLabel(action.type)}</span>
                   <span className="ml-auto max-w-[50%] truncate text-xs text-[#78858f]">
                     {action.target}
                   </span>
@@ -2635,7 +2644,15 @@ function ExecutionHistory({
       retryAction: actionType,
       actions: [preparedJob.actions[actionIndex]],
       automationTaskIds:
-        run.status === "partial" &&
+        actionType === "ProvisionM365Mailbox"
+          ? person.tasks
+              .filter(
+                (task) =>
+                  task.status !== "done" &&
+                  /e-?mail|postfach/i.test(task.title),
+              )
+              .map((task) => task.id)
+          : run.status === "partial" &&
         actionIndex === preparedJob.actions.length - 1
           ? preparedJob.automationTaskIds
           : [],

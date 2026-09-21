@@ -319,6 +319,81 @@ try {
                         Add-Change 'Computerbeschreibung aktualisiert' 'AD-Computer' $computerName "Geraet von $($job.person.displayName); nur Beschreibung geaendert" $oldDescription $newDescription 'Restore-ADComputerDescription'
                     }
                 }
+                'ProvisionM365Mailbox' {
+                    $upn = [string]$job.directory.userPrincipalName
+                    $syncServer = [string]$job.microsoft365.syncServer
+                    $skuPartNumber = [string]$job.microsoft365.skuPartNumber
+                    $usageLocation = [string]$job.microsoft365.usageLocation
+                    if ($Mode -eq 'WhatIf') {
+                        Add-RunLog $actionType 'simulated' "Delta-Sync auf $syncServer; Entra-Benutzer abwarten; freie Lizenz $skuPartNumber pruefen und zuweisen; Exchange-Online-Postfach $upn abwarten"
+                        Add-Change 'Microsoft-365-Postfach bereitstellen' 'Exchange-Online-Postfach' $upn "Lizenz: $skuPartNumber; Sync: $syncServer" $null 'Postfach bereit' 'manual' 'simulated'
+                        break
+                    }
+                    foreach ($variableName in @('M365_TENANT_ID', 'M365_CLIENT_ID', 'M365_CERT_THUMBPRINT', 'M365_ORGANIZATION')) {
+                        if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($variableName))) {
+                            throw "Jobserver-Konfiguration fehlt: $variableName"
+                        }
+                    }
+                    foreach ($moduleName in @('Microsoft.Graph.Authentication', 'Microsoft.Graph.Users', 'Microsoft.Graph.Users.Actions', 'Microsoft.Graph.Identity.DirectoryManagement', 'ExchangeOnlineManagement')) {
+                        if (-not (Get-Module -ListAvailable -Name $moduleName)) { throw "PowerShell-Modul fehlt auf dem Jobserver: $moduleName" }
+                        Import-Module $moduleName -ErrorAction Stop
+                    }
+                    Add-RunLog $actionType 'running' 'Verbindung zu Microsoft Graph und Exchange Online wird aufgebaut.'
+                    $graphConnected = $false
+                    $exchangeConnected = $false
+                    try {
+                        Connect-MgGraph -TenantId $env:M365_TENANT_ID -ClientId $env:M365_CLIENT_ID -CertificateThumbprint $env:M365_CERT_THUMBPRINT -NoWelcome
+                        $graphConnected = $true
+                        Connect-ExchangeOnline -AppId $env:M365_CLIENT_ID -CertificateThumbprint $env:M365_CERT_THUMBPRINT -Organization $env:M365_ORGANIZATION -ShowBanner:$false -CommandName Get-EXOMailbox
+                        $exchangeConnected = $true
+                        Add-RunLog $actionType 'running' "Delta-Synchronisierung auf $syncServer wird gestartet."
+                        Invoke-Command -ComputerName $syncServer -Credential $adCredential -ErrorAction Stop -ScriptBlock {
+                            Import-Module ADSync -ErrorAction Stop
+                            Start-ADSyncSyncCycle -PolicyType Delta -InteractiveMode $false
+                        } | Out-Null
+                        Add-RunLog $actionType 'running' "Warte auf Entra-ID-Benutzer $upn."
+                        $userSyncTimeoutMinutes = [int]$job.microsoft365.userSyncTimeoutMinutes
+                        $userDeadline = (Get-Date).AddMinutes($userSyncTimeoutMinutes)
+                        $cloudUser = $null
+                        do {
+                            try { $cloudUser = Get-MgUser -UserId $upn -Property Id,UserPrincipalName,UsageLocation,AssignedLicenses -ErrorAction Stop } catch { $cloudUser = $null }
+                            if (-not $cloudUser) { Start-Sleep -Seconds 15 }
+                        } until ($cloudUser -or (Get-Date) -ge $userDeadline)
+                        if (-not $cloudUser) { throw "Der Benutzer $upn wurde innerhalb von $userSyncTimeoutMinutes Minuten nicht nach Entra ID synchronisiert." }
+                        Add-RunLog $actionType 'running' "Entra-ID-Benutzer gefunden. Lizenz $skuPartNumber wird geprueft."
+                        if (-not $cloudUser.UsageLocation) {
+                            Update-MgUser -UserId $cloudUser.Id -UsageLocation $usageLocation
+                            Add-Change 'Nutzungsstandort gesetzt' 'Entra-ID-Benutzer' $upn 'Voraussetzung fuer Lizenzzuweisung' $null $usageLocation 'manual'
+                        }
+                        $sku = Get-MgSubscribedSku -All | Where-Object { $_.SkuPartNumber -eq $skuPartNumber } | Select-Object -First 1
+                        if (-not $sku) { throw "Microsoft-365-Lizenz '$skuPartNumber' wurde im Mandanten nicht gefunden." }
+                        $alreadyLicensed = @($cloudUser.AssignedLicenses | Where-Object { $_.SkuId -eq $sku.SkuId }).Count -gt 0
+                        if (-not $alreadyLicensed) {
+                            $freeLicenses = [int]$sku.PrepaidUnits.Enabled - [int]$sku.PrepaidUnits.Warning - [int]$sku.ConsumedUnits
+                            if ($freeLicenses -lt 1) {
+                                throw "Keine freie Microsoft 365 Business Premium Lizenz ($skuPartNumber). Belegte Lizenzen: $($sku.ConsumedUnits), aktiv: $($sku.PrepaidUnits.Enabled), Warnung: $($sku.PrepaidUnits.Warning). Erst Lizenzen bereinigen und danach diese Aktion einzeln erneut starten."
+                            }
+                            Set-MgUserLicense -UserId $cloudUser.Id -AddLicenses @(@{ SkuId = $sku.SkuId }) -RemoveLicenses @() | Out-Null
+                            Add-Change 'Microsoft-365-Lizenz zugewiesen' 'Microsoft-365-Lizenz' $skuPartNumber "Benutzer: $upn" $false $true 'manual'
+                        } else {
+                            Add-RunLog $actionType 'running' "Lizenz $skuPartNumber ist bereits zugewiesen."
+                        }
+                        Add-RunLog $actionType 'running' "Warte auf Exchange-Online-Postfach $upn."
+                        $mailboxTimeoutMinutes = [int]$job.microsoft365.mailboxTimeoutMinutes
+                        $mailboxDeadline = (Get-Date).AddMinutes($mailboxTimeoutMinutes)
+                        $mailbox = $null
+                        do {
+                            try { $mailbox = Get-EXOMailbox -Identity $upn -ErrorAction Stop } catch { $mailbox = $null }
+                            if (-not $mailbox) { Start-Sleep -Seconds 20 }
+                        } until ($mailbox -or (Get-Date) -ge $mailboxDeadline)
+                        if (-not $mailbox) { throw "Die Lizenz ist zugewiesen, aber das Exchange-Online-Postfach $upn ist nach $mailboxTimeoutMinutes Minuten noch nicht sichtbar. Diese Aktion spaeter erneut starten." }
+                        Add-Change 'Exchange-Online-Postfach bereit' 'Exchange-Online-Postfach' $upn "Mitarbeiter: $($job.person.displayName)" $null ([string]$mailbox.ExternalDirectoryObjectId) 'manual'
+                        Add-RunLog $actionType 'completed' "Lizenz $skuPartNumber und Postfach $upn sind bereit."
+                    } finally {
+                        if ($exchangeConnected) { Disconnect-ExchangeOnline -Confirm:$false -ErrorAction SilentlyContinue }
+                        if ($graphConnected) { Disconnect-MgGraph -ErrorAction SilentlyContinue }
+                    }
+                }
                 'CreateHelpdeskTicket' {
                     if ($Mode -eq 'WhatIf') { Add-RunLog $actionType 'simulated' $job.helpdesk.subject; Add-Change 'Helpdesk-Ticket erstellen' 'Helpdesk-Ticket' $job.helpdesk.subject "Vorgang fuer $($job.person.displayName)" $null $job.helpdesk.text 'manual' 'simulated'; break }
                     $ticketFields = @{ subject = $job.helpdesk.subject }

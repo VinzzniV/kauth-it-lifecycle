@@ -1,11 +1,19 @@
 [CmdletBinding()]
 param(
     [string]$ListenPrefix = 'http://localhost:8788/',
-    [string]$QueuePath = "$env:ProgramData\Kauth\ITLifecycle\Queue"
+    [string]$QueuePath = "$env:ProgramData\Kauth\ITLifecycle\Queue",
+    [string]$M365TenantId = $env:M365_TENANT_ID,
+    [string]$M365ClientId = $env:M365_CLIENT_ID,
+    [string]$M365CertificateThumbprint = $env:M365_CERT_THUMBPRINT,
+    [string]$M365Organization = $env:M365_ORGANIZATION
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+$env:M365_TENANT_ID = $M365TenantId
+$env:M365_CLIENT_ID = $M365ClientId
+$env:M365_CERT_THUMBPRINT = $M365CertificateThumbprint
+$env:M365_ORGANIZATION = $M365Organization
 $agentPath = Join-Path $PSScriptRoot 'Invoke-ItLifecycleAgent.ps1'
 if (-not (Test-Path -LiteralPath $agentPath)) { throw "Agent not found: $agentPath" }
 New-Item -ItemType Directory -Path $QueuePath -Force | Out-Null

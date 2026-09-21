@@ -322,6 +322,13 @@ export type AutomationJob = {
     text: string;
     resource?: string;
   };
+  microsoft365: {
+    syncServer: "PK-SRVMGMT001";
+    skuPartNumber: "SPB";
+    usageLocation: "DE";
+    userSyncTimeoutMinutes: 15;
+    mailboxTimeoutMinutes: 15;
+  };
   automationTaskIds: string[];
   actions: Array<{ type: string; target: string; requiresApproval: true }>;
 };
@@ -620,6 +627,9 @@ export function buildAutomationJob(
       ? "OU=deaktivierte User,DC=kauth,DC=local"
       : person.directoryTargetOu?.trim() ||
         (referenceUser ? "REFERENCE_USER_OU" : "REVIEW_REQUIRED");
+  const needsMailbox =
+    lifecycleType !== "offboarding" &&
+    person.services.some((service) => /e-?mail|postfach/i.test(service.label));
   const actions =
     lifecycleType === "offboarding"
       ? [
@@ -637,6 +647,7 @@ export function buildAutomationJob(
             (computer) =>
               `${computer.mode === "existing" ? "ReuseAdComputer" : "CreateAdComputer"}:${computer.type}`,
           ),
+          ...(needsMailbox ? ["ProvisionM365Mailbox"] : []),
           "CreateHelpdeskTicket",
         ];
   const subject = `${lifecycleType === "offboarding" ? "Offboarding" : lifecycleType === "onboarding" ? "Onboarding" : "Wechsel"}: ${person.firstName} ${person.lastName}`;
@@ -704,6 +715,13 @@ export function buildAutomationJob(
       text: ticketText,
       resource: options.helpdeskResource?.trim() || undefined,
     },
+    microsoft365: {
+      syncServer: "PK-SRVMGMT001",
+      skuPartNumber: "SPB",
+      usageLocation: "DE",
+      userSyncTimeoutMinutes: 15,
+      mailboxTimeoutMinutes: 15,
+    },
     automationTaskIds: person.tasks
       .filter(
         (task) => task.executionType === "simulated" && task.status !== "done",
@@ -721,6 +739,8 @@ export function buildAutomationJob(
                 ?.existingName || "COMPUTERNAME_REQUIRED"
             : type === "CopyGroupsFromReference"
               ? (referenceUser?.displayName ?? "Referenzbenutzer")
+              : type === "ProvisionM365Mailbox"
+                ? `${samAccountName}@kauth.de · Microsoft 365 Business Premium`
               : samAccountName,
       requiresApproval: true,
     })),
@@ -975,6 +995,53 @@ Set-ADComputer -Identity $ExistingComputer -Description '${q(computer.descriptio
 New-NextAdComputer -Prefix '${q(computer.prefix)}' -TargetOu '${q(computer.targetOu)}' -Description '${q(computer.description)}' -ManagedBy $(if ($User) { $User.DistinguishedName } else { $null })`,
     )
     .join("\n");
+  const m365Block = job.actions.some((action) => action.type === "ProvisionM365Mailbox")
+    ? `
+# Hybrides Microsoft-365-Postfach bereitstellen. App-ID und Zertifikat liegen nur auf dem Jobserver.
+if ($WhatIfMode) {
+    Write-Host "WHATIF: Delta-Sync auf ${q(job.microsoft365.syncServer)}, Lizenz ${q(job.microsoft365.skuPartNumber)} und Exchange-Online-Postfach für ${q(job.directory.userPrincipalName)}"
+} else {
+    foreach ($VariableName in 'M365_TENANT_ID','M365_CLIENT_ID','M365_CERT_THUMBPRINT','M365_ORGANIZATION') {
+        if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($VariableName))) { throw "Jobserver-Konfiguration fehlt: $VariableName" }
+    }
+    Import-Module Microsoft.Graph.Authentication -ErrorAction Stop
+    Import-Module Microsoft.Graph.Users -ErrorAction Stop
+    Import-Module Microsoft.Graph.Users.Actions -ErrorAction Stop
+    Import-Module Microsoft.Graph.Identity.DirectoryManagement -ErrorAction Stop
+    Import-Module ExchangeOnlineManagement -ErrorAction Stop
+    Connect-MgGraph -TenantId $env:M365_TENANT_ID -ClientId $env:M365_CLIENT_ID -CertificateThumbprint $env:M365_CERT_THUMBPRINT -NoWelcome
+    Connect-ExchangeOnline -AppId $env:M365_CLIENT_ID -CertificateThumbprint $env:M365_CERT_THUMBPRINT -Organization $env:M365_ORGANIZATION -ShowBanner:$false -CommandName Get-EXOMailbox
+    try {
+        Invoke-Command -ComputerName '${q(job.microsoft365.syncServer)}' -Credential $Credential -ScriptBlock {
+            Import-Module ADSync -ErrorAction Stop
+            Start-ADSyncSyncCycle -PolicyType Delta -InteractiveMode $false
+        }
+        $Deadline = (Get-Date).AddMinutes(${job.microsoft365.userSyncTimeoutMinutes})
+        do {
+            $CloudUser = Get-MgUser -UserId '${q(job.directory.userPrincipalName)}' -Property Id,UserPrincipalName,UsageLocation,AssignedLicenses -ErrorAction SilentlyContinue
+            if (-not $CloudUser) { Start-Sleep -Seconds 15 }
+        } until ($CloudUser -or (Get-Date) -ge $Deadline)
+        if (-not $CloudUser) { throw 'Der Benutzer wurde innerhalb des Zeitlimits nicht nach Entra ID synchronisiert.' }
+        if (-not $CloudUser.UsageLocation) { Update-MgUser -UserId $CloudUser.Id -UsageLocation '${q(job.microsoft365.usageLocation)}' }
+        $Sku = Get-MgSubscribedSku -All | Where-Object SkuPartNumber -eq '${q(job.microsoft365.skuPartNumber)}' | Select-Object -First 1
+        if (-not $Sku) { throw 'Microsoft 365 Business Premium (SPB) wurde im Mandanten nicht gefunden.' }
+        if ($CloudUser.AssignedLicenses.SkuId -notcontains $Sku.SkuId) {
+            $FreeLicenses = [int]$Sku.PrepaidUnits.Enabled - [int]$Sku.PrepaidUnits.Warning - [int]$Sku.ConsumedUnits
+            if ($FreeLicenses -lt 1) { throw 'Keine freie Microsoft 365 Business Premium Lizenz. Erst Lizenz bereinigen, dann diese Aktion erneut starten.' }
+            Set-MgUserLicense -UserId $CloudUser.Id -AddLicenses @(@{ SkuId = $Sku.SkuId }) -RemoveLicenses @()
+        }
+        $MailboxDeadline = (Get-Date).AddMinutes(${job.microsoft365.mailboxTimeoutMinutes})
+        do {
+            $Mailbox = Get-EXOMailbox -Identity '${q(job.directory.userPrincipalName)}' -ErrorAction SilentlyContinue
+            if (-not $Mailbox) { Start-Sleep -Seconds 20 }
+        } until ($Mailbox -or (Get-Date) -ge $MailboxDeadline)
+        if (-not $Mailbox) { throw 'Die Lizenz ist zugewiesen, aber das Exchange-Online-Postfach ist noch nicht sichtbar. Aktion später erneut prüfen.' }
+    } finally {
+        Disconnect-ExchangeOnline -Confirm:$false -ErrorAction SilentlyContinue
+        Disconnect-MgGraph -ErrorAction SilentlyContinue
+    }
+}`
+    : "# Kein Microsoft-365-Postfach angefordert.";
   return `[CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'High')]
 param([ValidateSet('WhatIf','Execute')][string]$Mode = 'WhatIf')
 
@@ -1023,6 +1090,8 @@ ${groupLines || "# Keine zusätzlichen Gruppen abgeleitet."}
 
 # Computerobjekt neu anlegen oder einen vorhandenen Rechner uebernehmen.
 ${computerLines || "# Kein Notebook und keine Workstation angefordert."}
+
+${m365Block}
 
 ${ticketBlock}
 

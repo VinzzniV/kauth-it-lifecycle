@@ -53,6 +53,13 @@ const jobSchema = z.discriminatedUnion("operation", [
         text: z.string(),
         resource: z.string().max(500).optional(),
       }),
+      microsoft365: z.object({
+        syncServer: z.literal("PK-SRVMGMT001"),
+        skuPartNumber: z.literal("SPB"),
+        usageLocation: z.string().regex(/^[A-Z]{2}$/),
+        userSyncTimeoutMinutes: z.number().int().min(1).max(60),
+        mailboxTimeoutMinutes: z.number().int().min(1).max(60),
+      }),
       actions: z.array(
         z.object({
           type: z.string(),
