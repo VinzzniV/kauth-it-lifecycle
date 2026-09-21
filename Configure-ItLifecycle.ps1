@@ -90,3 +90,4 @@ Write-Host "Konfiguration gespeichert: $ConfigurationPath" -ForegroundColor Gree
 Write-Host 'Start Webanwendung : .\Update-Server.ps1' -ForegroundColor Cyan
 Write-Host 'Start Gateway      : .\public\agent\Start-ItLifecycleGateway.ps1' -ForegroundColor Cyan
 Write-Host 'M365-Verbindungstest: .\public\agent\Test-M365Automation.ps1' -ForegroundColor Cyan
+Write-Host 'Wichtig: Nach jeder Token-Aenderung Docker-Container und ein bereits laufendes Gateway neu starten.' -ForegroundColor Yellow

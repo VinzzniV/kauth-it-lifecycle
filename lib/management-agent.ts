@@ -39,6 +39,10 @@ async function managementRequest(path: string, init: RequestInit) {
       .catch(() => ({}))) as {
       error?: string;
     };
+    if (response.status === 401)
+      throw new Error(
+        "Webanwendung und Management-Agent verwenden unterschiedliche Gateway-Token. Docker-Container und Windows-Gateway nach einer Änderung der .env neu starten.",
+      );
     throw new Error(
       details.error ??
         `Der Management-Agent hat den Auftrag abgelehnt (${response.status}).`,
