@@ -18,7 +18,12 @@ if (Test-Path -LiteralPath $ConfigurationPath) {
 function New-RandomValue {
     param([int]$Length = 32)
     $bytes = [byte[]]::new($Length)
-    [Security.Cryptography.RandomNumberGenerator]::Fill($bytes)
+    $generator = [Security.Cryptography.RandomNumberGenerator]::Create()
+    try {
+        $generator.GetBytes($bytes)
+    } finally {
+        $generator.Dispose()
+    }
     return [Convert]::ToBase64String($bytes).TrimEnd('=').Replace('+', 'A').Replace('/', 'B')
 }
 

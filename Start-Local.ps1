@@ -13,8 +13,13 @@ if ($LASTEXITCODE -ne 0) { throw 'Docker Desktop läuft nicht. Bitte Docker Desk
 if (-not (Test-Path -LiteralPath $envPath)) {
     $passwordBytes = [byte[]]::new(18)
     $tokenBytes = [byte[]]::new(32)
-    [Security.Cryptography.RandomNumberGenerator]::Fill($passwordBytes)
-    [Security.Cryptography.RandomNumberGenerator]::Fill($tokenBytes)
+    $generator = [Security.Cryptography.RandomNumberGenerator]::Create()
+    try {
+        $generator.GetBytes($passwordBytes)
+        $generator.GetBytes($tokenBytes)
+    } finally {
+        $generator.Dispose()
+    }
     $password = [Convert]::ToBase64String($passwordBytes).TrimEnd('=').Replace('+', 'A').Replace('/', 'B')
     $token = [Convert]::ToBase64String($tokenBytes)
     @(
