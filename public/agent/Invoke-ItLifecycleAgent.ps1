@@ -334,18 +334,15 @@ try {
                             throw "Jobserver-Konfiguration fehlt: $variableName"
                         }
                     }
-                    foreach ($moduleName in @('Microsoft.Graph.Authentication', 'Microsoft.Graph.Users', 'Microsoft.Graph.Users.Actions', 'Microsoft.Graph.Identity.DirectoryManagement', 'ExchangeOnlineManagement')) {
+                    foreach ($moduleName in @('Microsoft.Graph.Authentication', 'Microsoft.Graph.Users', 'Microsoft.Graph.Users.Actions', 'Microsoft.Graph.Identity.DirectoryManagement')) {
                         if (-not (Get-Module -ListAvailable -Name $moduleName)) { throw "PowerShell-Modul fehlt auf dem Jobserver: $moduleName" }
                         Import-Module $moduleName -ErrorAction Stop
                     }
-                    Add-RunLog $actionType 'running' 'Verbindung zu Microsoft Graph und Exchange Online wird aufgebaut.'
+                    Add-RunLog $actionType 'running' 'Verbindung zu Microsoft Graph wird aufgebaut.'
                     $graphConnected = $false
-                    $exchangeConnected = $false
                     try {
                         Connect-MgGraph -TenantId $env:M365_TENANT_ID -ClientId $env:M365_CLIENT_ID -CertificateThumbprint $env:M365_CERT_THUMBPRINT -NoWelcome
                         $graphConnected = $true
-                        Connect-ExchangeOnline -AppId $env:M365_CLIENT_ID -CertificateThumbprint $env:M365_CERT_THUMBPRINT -Organization $env:M365_ORGANIZATION -ShowBanner:$false -CommandName Get-EXOMailbox
-                        $exchangeConnected = $true
                         Add-RunLog $actionType 'running' "Delta-Synchronisierung auf $syncServer wird gestartet."
                         Invoke-Command -ComputerName $syncServer -Credential $adCredential -ErrorAction Stop -ScriptBlock {
                             Import-Module ADSync -ErrorAction Stop
@@ -380,17 +377,20 @@ try {
                         }
                         Add-RunLog $actionType 'running' "Warte auf Exchange-Online-Postfach $upn."
                         $mailboxTimeoutMinutes = [int]$job.microsoft365.mailboxTimeoutMinutes
-                        $mailboxDeadline = (Get-Date).AddMinutes($mailboxTimeoutMinutes)
-                        $mailbox = $null
-                        do {
-                            try { $mailbox = Get-EXOMailbox -Identity $upn -ErrorAction Stop } catch { $mailbox = $null }
-                            if (-not $mailbox) { Start-Sleep -Seconds 20 }
-                        } until ($mailbox -or (Get-Date) -ge $mailboxDeadline)
-                        if (-not $mailbox) { throw "Die Lizenz ist zugewiesen, aber das Exchange-Online-Postfach $upn ist nach $mailboxTimeoutMinutes Minuten noch nicht sichtbar. Diese Aktion spaeter erneut starten." }
-                        Add-Change 'Exchange-Online-Postfach bereit' 'Exchange-Online-Postfach' $upn "Mitarbeiter: $($job.person.displayName)" $null ([string]$mailbox.ExternalDirectoryObjectId) 'manual'
+                        $exchangeHelper = Join-Path $PSScriptRoot 'Invoke-ExchangeMailboxCheck.ps1'
+                        if (-not (Test-Path -LiteralPath $exchangeHelper)) { throw "Exchange-Hilfsskript fehlt: $exchangeHelper" }
+                        $exchangeOutput = & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $exchangeHelper `
+                            -ClientId $env:M365_CLIENT_ID `
+                            -CertificateThumbprint $env:M365_CERT_THUMBPRINT `
+                            -Organization $env:M365_ORGANIZATION `
+                            -Mode WaitMailbox `
+                            -UserPrincipalName $upn `
+                            -TimeoutMinutes $mailboxTimeoutMinutes 2>&1
+                        if ($LASTEXITCODE -ne 0) { throw "Exchange Online: $($exchangeOutput -join ' ') Diese Aktion spaeter erneut starten." }
+                        $exchangeResult = $exchangeOutput[-1] | ConvertFrom-Json
+                        Add-Change 'Exchange-Online-Postfach bereit' 'Exchange-Online-Postfach' $upn "Mitarbeiter: $($job.person.displayName)" $null ([string]$exchangeResult.mailboxId) 'manual'
                         Add-RunLog $actionType 'completed' "Lizenz $skuPartNumber und Postfach $upn sind bereit."
                     } finally {
-                        if ($exchangeConnected) { Disconnect-ExchangeOnline -Confirm:$false -ErrorAction SilentlyContinue }
                         if ($graphConnected) { Disconnect-MgGraph -ErrorAction SilentlyContinue }
                     }
                 }

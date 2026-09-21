@@ -14,8 +14,7 @@ $requiredModules = @(
     'Microsoft.Graph.Authentication',
     'Microsoft.Graph.Users',
     'Microsoft.Graph.Users.Actions',
-    'Microsoft.Graph.Identity.DirectoryManagement',
-    'ExchangeOnlineManagement'
+    'Microsoft.Graph.Identity.DirectoryManagement'
 )
 
 foreach ($moduleName in $requiredModules) {
@@ -33,7 +32,6 @@ if (-not $certificate) { throw "Zertifikat $CertificateThumbprint wurde fuer den
 if (-not $certificate.HasPrivateKey) { throw 'Das gefundene Zertifikat besitzt keinen privaten Schluessel.' }
 
 $graphConnected = $false
-$exchangeConnected = $false
 try {
     Connect-MgGraph -TenantId $TenantId -ClientId $ClientId -CertificateThumbprint $CertificateThumbprint -NoWelcome
     $graphConnected = $true
@@ -42,12 +40,16 @@ try {
     $freeLicenses = [int]$sku.PrepaidUnits.Enabled - [int]$sku.PrepaidUnits.Warning - [int]$sku.ConsumedUnits
     Write-Host "Microsoft Graph: OK - $SkuPartNumber frei: $freeLicenses" -ForegroundColor Green
 
-    Connect-ExchangeOnline -AppId $ClientId -CertificateThumbprint $CertificateThumbprint -Organization $Organization -ShowBanner:$false -CommandName Get-EXOMailbox
-    $exchangeConnected = $true
-    $null = Get-EXOMailbox -ResultSize 1 -ErrorAction Stop
+    $exchangeHelper = Join-Path $PSScriptRoot 'Invoke-ExchangeMailboxCheck.ps1'
+    if (-not (Test-Path -LiteralPath $exchangeHelper)) { throw "Exchange-Testskript fehlt: $exchangeHelper" }
+    $exchangeOutput = & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $exchangeHelper `
+        -ClientId $ClientId `
+        -CertificateThumbprint $CertificateThumbprint `
+        -Organization $Organization `
+        -Mode Probe 2>&1
+    if ($LASTEXITCODE -ne 0) { throw "Exchange Online: $($exchangeOutput -join ' ')" }
     Write-Host 'Exchange Online: OK' -ForegroundColor Green
 } finally {
-    if ($exchangeConnected) { Disconnect-ExchangeOnline -Confirm:$false -ErrorAction SilentlyContinue }
     if ($graphConnected) { Disconnect-MgGraph -ErrorAction SilentlyContinue }
 }
 
