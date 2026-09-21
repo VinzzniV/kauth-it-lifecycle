@@ -42,9 +42,11 @@ const jobSchema = z.discriminatedUnion("operation", [
           targetOu: z.string(),
         })
         .passthrough(),
-      adCredential: adCredentialSchema,
+      adCredential: adCredentialSchema.optional(),
       helpdeskCredential: adCredentialSchema.optional(),
       initialPassword: z.string().min(1).max(512).optional(),
+      retryOfRunId: z.string().min(1).optional(),
+      retryAction: z.string().min(1).optional(),
       helpdesk: z.object({
         baseUrl: z.string(),
         subject: z.string(),
@@ -89,6 +91,24 @@ const jobSchema = z.discriminatedUnion("operation", [
 export async function POST(request: Request) {
   try {
     const job = jobSchema.parse(await request.json());
+    if (
+      job.operation === "execute" &&
+      job.retryOfRunId &&
+      (job.actions.length !== 1 || job.actions[0]?.type !== job.retryAction)
+    )
+      return Response.json(
+        { error: "Die gezielte Wiederholung enthält nicht genau eine Aktion." },
+        { status: 400 },
+      );
+    if (
+      job.operation === "execute" &&
+      job.actions.some((action) => action.type !== "CreateHelpdeskTicket") &&
+      !job.adCredential
+    )
+      return Response.json(
+        { error: "Für diese Aktion fehlt die AD-Anmeldung." },
+        { status: 400 },
+      );
     if (
       job.operation === "execute" &&
       job.requestedMode === "Execute" &&
@@ -138,6 +158,8 @@ export async function POST(request: Request) {
         operation: "execute",
         mode: job.requestedMode,
         status: "queued",
+        relatedRunId:
+          job.operation === "execute" ? (job.retryOfRunId ?? null) : null,
         canRollback: false,
         startedAt: now,
         error: "",

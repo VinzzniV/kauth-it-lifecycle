@@ -162,13 +162,11 @@ export async function POST(request: Request) {
           updatedAt: result.completedAt,
         })
         .where(eq(employees.id, result.employeeId));
-      await db
-        .insert(auditEntries)
-        .values({
-          employeeId: result.employeeId,
-          action: "Referenzbenutzer geprüft",
-          detail: `${lookup?.query ?? "Unbekannte Abfrage"}: ${message}`,
-        });
+      await db.insert(auditEntries).values({
+        employeeId: result.employeeId,
+        action: "Referenzbenutzer geprüft",
+        detail: `${lookup?.query ?? "Unbekannte Abfrage"}: ${message}`,
+      });
       return Response.json({ ok: true });
     }
     if (
@@ -234,16 +232,16 @@ export async function POST(request: Request) {
         .update(employees)
         .set({ status: "completed", updatedAt: result.completedAt })
         .where(eq(employees.id, result.employeeId));
-    await db
-      .insert(auditEntries)
-      .values({
-        employeeId: result.employeeId,
-        action:
-          result.operation === "rollback"
-            ? "Automation zurückgenommen"
+    await db.insert(auditEntries).values({
+      employeeId: result.employeeId,
+      action:
+        result.operation === "rollback"
+          ? "Automation zurückgenommen"
+          : result.relatedRunId
+            ? "Automation-Aktion wiederholt"
             : "Automation ausgeführt",
-        detail: `${result.jobId}: ${result.status}`,
-      });
+      detail: `${result.jobId}: ${result.status}${result.relatedRunId ? ` (Ausgangslauf: ${result.relatedRunId})` : ""}`,
+    });
     return Response.json({ ok: true });
   } catch (error) {
     return Response.json(
@@ -331,20 +329,18 @@ export async function PATCH(request: Request) {
       originalRun: { id: run.id, changes },
     };
     await forwardToManagementAgent(rollbackJob);
-    await db
-      .insert(automationRuns)
-      .values({
-        id: rollbackJob.jobId,
-        employeeId: person.id,
-        jobId: rollbackJob.jobId,
-        operation: "rollback",
-        mode,
-        status: "queued",
-        relatedRunId: run.id,
-        canRollback: false,
-        startedAt: new Date().toISOString(),
-        error: "",
-      });
+    await db.insert(automationRuns).values({
+      id: rollbackJob.jobId,
+      employeeId: person.id,
+      jobId: rollbackJob.jobId,
+      operation: "rollback",
+      mode,
+      status: "queued",
+      relatedRunId: run.id,
+      canRollback: false,
+      startedAt: new Date().toISOString(),
+      error: "",
+    });
     return Response.json({ ok: true, jobId: rollbackJob.jobId });
   } catch (error) {
     const message =

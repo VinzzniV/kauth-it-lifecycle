@@ -52,6 +52,10 @@ export type AutomationRun = {
   error?: string;
   changes: AutomationChange[];
 };
+
+export function failedAutomationAction(run: AutomationRun) {
+  return run.error?.match(/^Fehler bei '([^']+)'/)?.[1] ?? "";
+}
 export type EmployeeRecord = {
   id: string;
   personnelNumber: string;

@@ -32,6 +32,7 @@ $adCredential = $null
 $helpdeskCredential = $null
 $initialPassword = $null
 $script:CurrentAction = 'Initialisierung'
+$requiresAdCredential = $operation -in @('rollback', 'reference_check') -or @($job.actions | Where-Object { $_.type -ne 'CreateHelpdeskTicket' }).Count -gt 0
 
 function Write-ProgressSnapshot {
     $temporaryPath = "$progressPath.tmp"
@@ -96,17 +97,17 @@ function Find-ReferenceUsers {
 
 Write-Host "IT Lifecycle agent - $operation / $Mode" -ForegroundColor Cyan
 Write-Host "Job: $($job.jobId)"
-Write-Host 'The AD credential is loaded from a one-time DPAPI file and is not written to the result file.' -ForegroundColor DarkGray
+Write-Host 'Required credentials are loaded from one-time DPAPI files and are not written to the result file.' -ForegroundColor DarkGray
 
 try {
-    if ($CredentialPath) {
+    if ($requiresAdCredential -and $CredentialPath) {
         try {
             $adCredential = Import-Clixml -LiteralPath $CredentialPath
         } finally {
             Remove-Item -LiteralPath $CredentialPath -Force -ErrorAction SilentlyContinue
         }
         if ($adCredential -isnot [Management.Automation.PSCredential]) { throw 'The supplied AD credential could not be read.' }
-    } else { throw 'No AD credential was supplied. Interactive prompts are disabled for gateway jobs.' }
+    } elseif ($requiresAdCredential) { throw 'No AD credential was supplied. Interactive prompts are disabled for gateway jobs.' }
     if ($InitialPasswordPath) {
         try {
             $initialPasswordCredential = Import-Clixml -LiteralPath $InitialPasswordPath
@@ -125,11 +126,13 @@ try {
         }
         if ($helpdeskCredential -isnot [Management.Automation.PSCredential]) { throw 'The supplied HelpDesk credential could not be read.' }
     }
-    Add-RunLog 'AD-Verbindung pruefen' 'running' $job.directory.domain
-    Import-Module ActiveDirectory -ErrorAction Stop
-    $null = Get-ADDomain -Identity $job.directory.domain -Server $job.directory.domain -Credential $adCredential
-    $adArgs = @{ Server = $job.directory.domain; Credential = $adCredential; ErrorAction = 'Stop' }
-    Add-RunLog 'AD-Verbindung pruefen' 'completed' $job.directory.domain
+    if ($requiresAdCredential) {
+        Add-RunLog 'AD-Verbindung pruefen' 'running' $job.directory.domain
+        Import-Module ActiveDirectory -ErrorAction Stop
+        $null = Get-ADDomain -Identity $job.directory.domain -Server $job.directory.domain -Credential $adCredential
+        $adArgs = @{ Server = $job.directory.domain; Credential = $adCredential; ErrorAction = 'Stop' }
+        Add-RunLog 'AD-Verbindung pruefen' 'completed' $job.directory.domain
+    }
 
     if ($operation -eq 'reference_check') {
         $query = [string]$job.directory.referenceUser.query
@@ -190,34 +193,39 @@ try {
             }
         }
     } else {
-        if ($job.directory.samAccountName -notmatch '^[a-z0-9.-]+$') { throw 'Invalid sAMAccountName in job.' }
-        if ($Mode -eq 'Execute' -and $job.lifecycleType -ne 'offboarding' -and $job.directory.targetOu -eq 'REVIEW_REQUIRED') { throw 'Select and approve a target OU in the job before running the agent.' }
-        if ($Mode -eq 'Execute' -and @($job.directory.computers | Where-Object { $_.mode -ne 'existing' -and ($_.prefix -eq 'REVIEW_REQUIRED' -or $_.targetOu -eq 'REVIEW_REQUIRED') }).Count) { throw 'Select and approve the location and computer OU before running the agent.' }
-
-        Add-RunLog 'Vorbedingungen pruefen' 'running' $job.directory.samAccountName
-        $existingUser = Get-ADUser -Filter "SamAccountName -eq '$($job.directory.samAccountName)'" @adArgs -Properties MemberOf,Mail,Enabled,DistinguishedName,DisplayName,EmployeeNumber
         $createUserRequested = @($job.actions | Where-Object { $_.type -eq 'CreateAdUser' }).Count -gt 0
-        if ($createUserRequested) {
-            if ($existingUser) {
-                throw "AD-Benutzer '$($job.directory.samAccountName)' existiert bereits als '$($existingUser.DisplayName)' ($($existingUser.DistinguishedName)). Der Lauf wurde vor weiteren Aenderungen gestoppt."
+        $computerActionRequested = @($job.actions | Where-Object { $_.type -like 'CreateAdComputer:*' }).Count -gt 0
+        $referenceActionRequested = @($job.actions | Where-Object { $_.type -eq 'CopyGroupsFromReference' }).Count -gt 0
+        $existingUser = $null
+        $referenceUser = $null
+        $resolvedTargetOu = [string]$job.directory.targetOu
+        if ($requiresAdCredential) {
+            if ($job.directory.samAccountName -notmatch '^[a-z0-9.-]+$') { throw 'Invalid sAMAccountName in job.' }
+            if ($Mode -eq 'Execute' -and $createUserRequested -and $job.lifecycleType -ne 'offboarding' -and $job.directory.targetOu -eq 'REVIEW_REQUIRED') { throw 'Select and approve a target OU in the job before running the agent.' }
+            if ($Mode -eq 'Execute' -and $computerActionRequested -and @($job.directory.computers | Where-Object { $_.mode -ne 'existing' -and ($_.prefix -eq 'REVIEW_REQUIRED' -or $_.targetOu -eq 'REVIEW_REQUIRED') }).Count) { throw 'Select and approve the location and computer OU before running the agent.' }
+
+            Add-RunLog 'Vorbedingungen pruefen' 'running' $job.directory.samAccountName
+            $existingUser = Get-ADUser -Filter "SamAccountName -eq '$($job.directory.samAccountName)'" @adArgs -Properties MemberOf,Mail,Enabled,DistinguishedName,DisplayName,EmployeeNumber
+            if ($createUserRequested) {
+                if ($existingUser) {
+                    throw "AD-Benutzer '$($job.directory.samAccountName)' existiert bereits als '$($existingUser.DisplayName)' ($($existingUser.DistinguishedName)). Der Lauf wurde vor weiteren Aenderungen gestoppt."
+                }
+                if ($Mode -eq 'Execute' -and -not $initialPassword) {
+                    throw 'Fuer die aktivierte Benutzeranlage wurde kein initiales Benutzerkennwort uebergeben.'
+                }
+                Add-RunLog 'Vorbedingungen pruefen' 'completed' 'Kein vorhandenes Zielkonto gefunden.'
+            } else {
+                Add-RunLog 'Vorbedingungen pruefen' 'completed' $(if ($existingUser) { "Zielkonto gefunden: $($existingUser.DistinguishedName)" } else { 'Zielkonto wurde nicht gefunden.' })
             }
-            if ($Mode -eq 'Execute' -and -not $initialPassword) {
-                throw 'Fuer die aktivierte Benutzeranlage wurde kein initiales Benutzerkennwort uebergeben.'
+            if ($job.directory.referenceUser -and ($referenceActionRequested -or ($createUserRequested -and $resolvedTargetOu -eq 'REFERENCE_USER_OU'))) {
+                $referenceUsers = @(Find-ReferenceUsers $job.directory.referenceUser $adArgs)
+                if ($referenceUsers.Count -ne 1) { throw "Reference user '$($job.directory.referenceUser.displayName)' is not unique. Found: $($referenceUsers.Count)." }
+                $referenceUser = $referenceUsers[0]
+                if ($resolvedTargetOu -eq 'REFERENCE_USER_OU') { $resolvedTargetOu = Get-ParentDn $referenceUser.DistinguishedName }
             }
-            Add-RunLog 'Vorbedingungen pruefen' 'completed' 'Kein vorhandenes Zielkonto gefunden.'
-        } else {
-            Add-RunLog 'Vorbedingungen pruefen' 'completed' $(if ($existingUser) { "Zielkonto gefunden: $($existingUser.DistinguishedName)" } else { 'Zielkonto wurde nicht gefunden.' })
         }
         $assignedGroups = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
         if ($existingUser) { foreach ($groupDn in @($existingUser.MemberOf)) { $null = $assignedGroups.Add([string]$groupDn) } }
-        $referenceUser = $null
-        $resolvedTargetOu = [string]$job.directory.targetOu
-        if ($job.directory.referenceUser) {
-            $referenceUsers = @(Find-ReferenceUsers $job.directory.referenceUser $adArgs)
-            if ($referenceUsers.Count -ne 1) { throw "Reference user '$($job.directory.referenceUser.displayName)' is not unique. Found: $($referenceUsers.Count)." }
-            $referenceUser = $referenceUsers[0]
-            if ($resolvedTargetOu -eq 'REFERENCE_USER_OU') { $resolvedTargetOu = Get-ParentDn $referenceUser.DistinguishedName }
-        }
 
         foreach ($action in $job.actions) {
             $actionType = [string]$action.type
@@ -346,7 +354,7 @@ try {
     }
     $result = [pscustomobject]@{
         schemaVersion = 1; runId = $runId; jobId = [string]$job.jobId; employeeId = [string]$job.person.employeeId
-        operation = $operation; mode = $Mode; status = $runStatus; relatedRunId = if ($operation -eq 'rollback') { [string]$job.originalRun.id } else { $null }
+        operation = $operation; mode = $Mode; status = $runStatus; relatedRunId = if ($operation -eq 'rollback') { [string]$job.originalRun.id } elseif ($job.PSObject.Properties['retryOfRunId']) { [string]$job.retryOfRunId } else { $null }
         startedAt = $startedAt.ToString('o'); completedAt = $completedAt.ToString('o'); error = $runError
         automationTaskIds = [string[]]$automationTaskIds; changes = $script:Changes; log = $script:RunLog
         referenceLookup = $referenceLookup

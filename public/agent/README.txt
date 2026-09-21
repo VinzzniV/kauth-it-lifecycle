@@ -28,5 +28,6 @@ Direct start from the portal (optional pilot gateway):
 - Configure the same gateway token as the Sites secret MANAGEMENT_AGENT_TOKEN.
 - The gateway accepts WhatIf, Execute and rollback jobs. The portal supplies separate one-time AD and HelpDesk credentials for real runs.
 - The portal polls the authenticated /results endpoint and stores the returned result in the employee record.
+- Failed actions can be retried as a single linked execution. HelpDesk-only retries skip AD module loading and do not require an AD credential.
 - Rollback reverses only changes recorded by that exact execution. Helpdesk tickets without a confirmed cancellation API remain documented as manual follow-up.
 - Never publish port 8788 directly to the internet.

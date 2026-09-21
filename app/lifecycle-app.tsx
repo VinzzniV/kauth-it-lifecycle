@@ -69,6 +69,7 @@ import {
   ComputerAssignments,
   defaultMasterData,
   EmployeeRecord,
+  failedAutomationAction,
   getReferenceUserName,
   MasterDataItem,
   MasterDataKind,
@@ -877,6 +878,7 @@ function AdCredentialDialog({
   setOpen,
   title,
   onSubmit,
+  requireAdCredential = true,
   requireInitialPassword = false,
   requireHelpdeskCredential = false,
 }: {
@@ -884,10 +886,11 @@ function AdCredentialDialog({
   setOpen: (value: boolean) => void;
   title: string;
   onSubmit: (
-    credential: AdCredential,
+    credential?: AdCredential,
     initialPassword?: string,
     helpdeskCredential?: AdCredential,
   ) => void;
+  requireAdCredential?: boolean;
   requireInitialPassword?: boolean;
   requireHelpdeskCredential?: boolean;
 }) {
@@ -899,15 +902,14 @@ function AdCredentialDialog({
   function submit(event: FormEvent) {
     event.preventDefault();
     if (
-      !username.trim() ||
-      !password ||
+      (requireAdCredential && (!username.trim() || !password)) ||
       (requireInitialPassword && !initialPassword) ||
       (requireHelpdeskCredential &&
         (!helpdeskUsername.trim() || !helpdeskPassword))
     )
       return;
     onSubmit(
-      { username: username.trim(), password },
+      requireAdCredential ? { username: username.trim(), password } : undefined,
       requireInitialPassword ? initialPassword : undefined,
       requireHelpdeskCredential
         ? {
@@ -943,37 +945,41 @@ function AdCredentialDialog({
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-3">
-            <div>
-              <label
-                className="mb-1.5 block text-sm font-medium"
-                htmlFor="ad-username"
-              >
-                AD-Benutzername
-              </label>
-              <Input
-                id="ad-username"
-                autoComplete="username"
-                value={username}
-                onChange={(event) => setUsername(event.target.value)}
-                placeholder="KAUTH\\benutzername"
-                autoFocus
-              />
-            </div>
-            <div>
-              <label
-                className="mb-1.5 block text-sm font-medium"
-                htmlFor="ad-password"
-              >
-                AD-Kennwort
-              </label>
-              <Input
-                id="ad-password"
-                type="password"
-                autoComplete="current-password"
-                value={password}
-                onChange={(event) => setPassword(event.target.value)}
-              />
-            </div>
+            {requireAdCredential && (
+              <>
+                <div>
+                  <label
+                    className="mb-1.5 block text-sm font-medium"
+                    htmlFor="ad-username"
+                  >
+                    AD-Benutzername
+                  </label>
+                  <Input
+                    id="ad-username"
+                    autoComplete="username"
+                    value={username}
+                    onChange={(event) => setUsername(event.target.value)}
+                    placeholder="KAUTH\\benutzername"
+                    autoFocus
+                  />
+                </div>
+                <div>
+                  <label
+                    className="mb-1.5 block text-sm font-medium"
+                    htmlFor="ad-password"
+                  >
+                    AD-Kennwort
+                  </label>
+                  <Input
+                    id="ad-password"
+                    type="password"
+                    autoComplete="current-password"
+                    value={password}
+                    onChange={(event) => setPassword(event.target.value)}
+                  />
+                </div>
+              </>
+            )}
             {requireInitialPassword && (
               <div className="rounded-xl border border-[#dce3e7] bg-[#f8fafb] p-4">
                 <label
@@ -1017,6 +1023,7 @@ function AdCredentialDialog({
                   <Input
                     id="helpdesk-username"
                     autoComplete="off"
+                    autoFocus={!requireAdCredential}
                     value={helpdeskUsername}
                     onChange={(event) =>
                       setHelpdeskUsername(event.target.value)
@@ -1046,8 +1053,10 @@ function AdCredentialDialog({
             <div className="flex gap-2 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
               <ShieldCheck className="mt-0.5 size-4 shrink-0" />
               <span>
-                Für den Regelbetrieb ein delegiertes AD-Konto verwenden. Die
-                lokale Installation sollte vor echtem Betrieb per HTTPS
+                {requireAdCredential
+                  ? "Für den Regelbetrieb ein delegiertes AD-Konto verwenden. "
+                  : "Für diese Wiederholung werden keine AD-Zugangsdaten benötigt. "}
+                Die lokale Installation sollte vor echtem Betrieb per HTTPS
                 erreichbar sein.
               </span>
             </div>
@@ -1063,8 +1072,7 @@ function AdCredentialDialog({
             <Button
               type="submit"
               disabled={
-                !username.trim() ||
-                !password ||
+                (requireAdCredential && (!username.trim() || !password)) ||
                 (requireInitialPassword && !initialPassword) ||
                 (requireHelpdeskCredential &&
                   (!helpdeskUsername.trim() || !helpdeskPassword))
@@ -1242,10 +1250,11 @@ function AutomationsView({
     setCredentialOpen(true);
   }
   function submitCredentials(
-    credential: AdCredential,
+    credential?: AdCredential,
     initialPassword?: string,
     helpdeskCredential?: AdCredential,
   ) {
+    if (!credential) return;
     if (credentialAction === "reference") void checkReference(credential);
     else
       void requestRun(
@@ -2410,6 +2419,7 @@ function EmployeeDialog({
               </div>
               <div className="lg:col-span-2">
                 <ExecutionHistory
+                  person={person}
                   runs={person.automationRuns ?? []}
                   onRefresh={onRefresh}
                 />
@@ -2526,14 +2536,21 @@ function ChangeList({
 }
 
 function ExecutionHistory({
+  person,
   runs,
   onRefresh,
 }: {
+  person: EmployeeRecord;
   runs: AutomationRun[];
   onRefresh: () => void;
 }) {
   const [message, setMessage] = useState("");
   const [rollbackRun, setRollbackRun] = useState<AutomationRun | null>(null);
+  const [retryRun, setRetryRun] = useState<AutomationRun | null>(null);
+  const retryActionType = retryRun ? failedAutomationAction(retryRun) : "";
+  const availableActionTypes = new Set(
+    buildAutomationJob(person).actions.map((action) => action.type),
+  );
   async function rollback(run: AutomationRun, adCredential: AdCredential) {
     setMessage("");
     const response = await fetch("/api/executions", {
@@ -2552,6 +2569,61 @@ function ExecutionHistory({
       setMessage(await collectExecutionResult(data.jobId, onRefresh));
     }
   }
+  async function retryFailedAction(
+    run: AutomationRun,
+    adCredential?: AdCredential,
+    initialPassword?: string,
+    helpdeskCredential?: AdCredential,
+  ) {
+    const actionType = failedAutomationAction(run);
+    const preparedJob = buildAutomationJob(person);
+    const actionIndex = preparedJob.actions.findIndex(
+      (action) => action.type === actionType,
+    );
+    if (!actionType || actionIndex < 0) {
+      setMessage(
+        "Diese Aktion kann aus den aktuellen Daten nicht sicher rekonstruiert werden. Bitte den Schritt in der Automationsansicht erneut vorbereiten.",
+      );
+      return;
+    }
+    const retryJob = {
+      ...preparedJob,
+      jobId: `retry-${person.personnelNumber}-${Date.now()}`,
+      createdAt: new Date().toISOString(),
+      requestedMode: "Execute" as const,
+      retryOfRunId: run.id,
+      retryAction: actionType,
+      actions: [preparedJob.actions[actionIndex]],
+      automationTaskIds:
+        run.status === "partial" &&
+        actionIndex === preparedJob.actions.length - 1
+          ? preparedJob.automationTaskIds
+          : [],
+    };
+    setMessage(`${executionActionLabel(actionType)} wird erneut gestartet …`);
+    try {
+      const response = await fetch("/api/agent", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          ...retryJob,
+          ...(adCredential ? { adCredential } : {}),
+          ...(initialPassword ? { initialPassword } : {}),
+          ...(helpdeskCredential ? { helpdeskCredential } : {}),
+        }),
+      });
+      const data = (await response.json().catch(() => ({}))) as ApiMessage;
+      if (!response.ok) {
+        setMessage(data.error ?? "Die Aktion konnte nicht gestartet werden.");
+        return;
+      }
+      setMessage(
+        await collectExecutionResult(data.jobId ?? retryJob.jobId, onRefresh),
+      );
+    } catch {
+      setMessage("Management-Agent nicht erreichbar.");
+    }
+  }
   if (!runs.length)
     return (
       <div className="rounded-xl border border-dashed p-5 text-sm text-[#71808c]">
@@ -2568,8 +2640,32 @@ function ExecutionHistory({
         }}
         title="Rollback im AD starten"
         onSubmit={(credential) => {
-          if (rollbackRun) void rollback(rollbackRun, credential);
+          if (rollbackRun && credential) void rollback(rollbackRun, credential);
           setRollbackRun(null);
+        }}
+      />
+      <AdCredentialDialog
+        open={!!retryRun}
+        setOpen={(open) => {
+          if (!open) setRetryRun(null);
+        }}
+        title={
+          retryRun
+            ? `${executionActionLabel(retryActionType)} erneut ausführen`
+            : "Aktion erneut ausführen"
+        }
+        requireAdCredential={retryActionType !== "CreateHelpdeskTicket"}
+        requireInitialPassword={retryActionType === "CreateAdUser"}
+        requireHelpdeskCredential={retryActionType === "CreateHelpdeskTicket"}
+        onSubmit={(credential, initialPassword, helpdeskCredential) => {
+          if (retryRun)
+            void retryFailedAction(
+              retryRun,
+              credential,
+              initialPassword,
+              helpdeskCredential,
+            );
+          setRetryRun(null);
         }}
       />
       <div>
@@ -2589,13 +2685,15 @@ function ExecutionHistory({
             <div>
               <div className="flex items-center gap-2">
                 <Badge variant="outline" className={badgeClass(run.status)}>
-                  {run.operation === "reference_check"
-                    ? "Referenzprüfung"
-                    : run.operation === "rollback"
-                      ? "Rollback"
-                      : run.mode === "WhatIf"
-                        ? "Testlauf"
-                        : "Ausführung"}
+                  {run.operation === "execute" && run.relatedRunId
+                    ? "Wiederholung"
+                    : run.operation === "reference_check"
+                      ? "Referenzprüfung"
+                      : run.operation === "rollback"
+                        ? "Rollback"
+                        : run.mode === "WhatIf"
+                          ? "Testlauf"
+                          : "Ausführung"}
                 </Badge>
                 <span className="text-sm font-medium">
                   {statusText[run.status] ?? run.status}
@@ -2604,6 +2702,11 @@ function ExecutionHistory({
               <p className="mt-2 text-xs text-[#7a8790]">
                 {formatDate(run.completedAt ?? run.startedAt)} · {run.jobId}
               </p>
+              {run.operation === "execute" && run.relatedRunId && (
+                <p className="mt-1 text-xs text-[#7a8790]">
+                  Wiederholung aus Lauf {run.relatedRunId}
+                </p>
+              )}
             </div>
             {run.canRollback && (
               <AlertDialog>
@@ -2659,8 +2762,41 @@ function ExecutionHistory({
           </div>
           {run.error && (
             <div className="mt-4 rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-900">
-              <p className="font-medium">Fehler des Management-Agenten</p>
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <p className="font-medium">Fehler des Management-Agenten</p>
+                {run.operation === "execute" &&
+                  run.mode === "Execute" &&
+                  ["partial", "failed"].includes(run.status) &&
+                  availableActionTypes.has(failedAutomationAction(run)) &&
+                  !runs.some(
+                    (candidate) =>
+                      candidate.relatedRunId === run.id &&
+                      candidate.status === "completed",
+                  ) && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="border-rose-300 bg-white text-rose-800 hover:bg-rose-100"
+                      onClick={() => setRetryRun(run)}
+                    >
+                      <RotateCcw className="size-4" />
+                      Nur diese Aktion erneut ausführen
+                    </Button>
+                  )}
+              </div>
               <p className="mt-1 break-words">{run.error}</p>
+              {failedAutomationAction(run) && (
+                <div className="mt-2 space-y-1 text-xs text-rose-700">
+                  <p>
+                    Erkannte Aktion:{" "}
+                    {executionActionLabel(failedAutomationAction(run))}
+                  </p>
+                  <p>
+                    Vor der Wiederholung kurz prüfen, ob das Zielsystem die
+                    Aktion trotz der Fehlermeldung bereits verarbeitet hat.
+                  </p>
+                </div>
+              )}
             </div>
           )}
           <div className="mt-4">
