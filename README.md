@@ -4,6 +4,10 @@ Eine Webanwendung mit lokaler SQLite-Datenbank und Windows-Gateway für HR-Laufk
 
 ## Arbeitsablauf
 
+Akten unterscheiden Vorgangsstatus, Aufgabenfortschritt, dokumentierten Bestand und letzten Automationslauf. „Beantragt“ und „Freigegeben“ bestätigen keine Bereitstellung. Ergebnisse stehen vor eingeklappten Planungsdetails; Aufgaben starten mit „Offen“. Referenzprofile sind Metadaten, historische Einträge bleiben erhalten. Freigabe nennt den konkreten Umfang, Rücknahme zeigt unterstützte Schritte und verbleibende manuelle Arbeit.
+
+UI/UX-Änderungen, Testbelege und isolierte Vorschau: [UI-UX-IMPLEMENTATION-REPORT.md](UI-UX-IMPLEMENTATION-REPORT.md). Diese Änderungen sind lokal vorbereitet und noch nicht in die Installation auf Port 8080 übernommen.
+
 1. CSV/XLS/XLSX einlesen, erkannte Person, Vorgang und IT-Positionen prüfen und speichern.
 2. In der Akte Referenzbenutzer prüfen oder eine vollständige Ziel-OU festlegen. Computer neu planen oder ein vorhandenes Gerät zuweisen.
 3. WhatIf ausführen. Für Execute die angezeigten Aktionen ausdrücklich freigeben und benötigte, getrennte Anmeldungen übergeben.

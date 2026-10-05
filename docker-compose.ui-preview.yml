@@ -1,0 +1,49 @@
+# Only synthetic read-only data. No production configuration, gateway or volume.
+services:
+  web:
+    image: kauth/it-lifecycle:v1-http-46968c8
+    container_name: kauth-ui-ux-preview
+    restart: unless-stopped
+    ports: ["127.0.0.1:18082:8080"]
+    environment:
+      LOCAL_BASIC_AUTH_ENABLED: "true"
+      APP_USERNAME: ui-preview
+      APP_PASSWORD: synthetic-only
+      MANAGEMENT_AGENT_URL: http://127.0.0.1:1
+      MANAGEMENT_AGENT_TOKEN: ui-preview-unused
+      IT_LIFECYCLE_WEB_URL: http://PK-SRVJOB001:18081
+    volumes:
+      - ui_data:/data
+      - ./dist:/app/dist:ro
+      - ./drizzle:/app/drizzle:ro
+      - ./public:/app/public:ro
+    networks: [isolated]
+  data:
+    image: kauth/it-lifecycle:v1-http-46968c8
+    container_name: kauth-ui-ux-data
+    restart: unless-stopped
+    entrypoint: [node, --import, tsx, tests/ui/preview.ts]
+    ports: ["0.0.0.0:18081:18081"]
+    environment:
+      UI_PREVIEW_UPSTREAM: http://web:8080
+    volumes:
+      - ./tests:/app/tests:ro
+      - ./app:/app/app:ro
+      - ./lib:/app/lib:ro
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:18081/api/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    depends_on:
+      web: {condition: service_healthy}
+    networks: [isolated]
+volumes:
+  ui_data:
+    external: true
+    name: kauth_ui_ux_preview_data
+networks:
+  isolated:
+    external: true
+    name: kauth-ui-ux-isolated

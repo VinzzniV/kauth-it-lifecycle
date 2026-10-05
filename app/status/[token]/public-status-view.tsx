@@ -6,8 +6,11 @@ import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import type { ServiceItem, TaskItem } from "../../data";
+import { inventorySummary, stateLabel } from "../../../lib/ui-projections";
 
 type PublicAutomationRun = {
+  mode: string;
+  operation: string;
   status: string;
   startedAt: string;
   completedAt?: string | null;
@@ -15,6 +18,7 @@ type PublicAutomationRun = {
 };
 
 type PublicEmployee = {
+  referenceProfile?: boolean;
   personnelNumber: string;
   firstName: string;
   lastName: string;
@@ -26,21 +30,6 @@ type PublicEmployee = {
   tasks: TaskItem[];
   services: ServiceItem[];
   automationRuns: PublicAutomationRun[];
-};
-
-const statusText: Record<string, string> = {
-  pending: "In Prüfung",
-  active: "Aktiv",
-  leaving: "Austritt läuft",
-  inactive: "Inaktiv",
-  completed: "Abgeschlossen",
-  queued: "Wartet",
-  review_required: "Prüfung erforderlich",
-  reviewed: "Manuell geprüft",
-  simulated: "Testlauf abgeschlossen",
-  partial: "Teilweise erledigt",
-  failed: "Fehlgeschlagen",
-  rolled_back: "Zurückgenommen",
 };
 
 function formatDate(value?: string | null) {
@@ -68,8 +57,8 @@ export function PublicStatusView({ token }: { token: string }) {
   if (!employee) return <main className="grid min-h-screen place-items-center bg-[#f3f6f8]"><p className="text-[#667680]">Aktueller Stand wird geladen …</p></main>;
 
   const done = employee.tasks.filter((task) => task.status === "done").length;
-  const percent = employee.tasks.length ? Math.round(done / employee.tasks.length * 100) : 100;
-  const latestRun = employee.automationRuns[0];
+  const percent = employee.tasks.length ? Math.round(done / employee.tasks.length * 100) : 0;
+  const latestRun = employee.automationRuns.find((run) => run.operation !== "reference_check");
   return (
     <main className="min-h-screen bg-[#f3f6f8] text-[#162033]">
       <div className="bg-[#132238] text-white">
@@ -77,12 +66,13 @@ export function PublicStatusView({ token }: { token: string }) {
           <div className="flex items-center gap-3 text-sm text-white/65"><ShieldCheck className="size-5 text-[#5de1d0]" />IT Lifecycle · Statusansicht</div>
           <div className="mt-5 flex flex-wrap items-end justify-between gap-4">
             <div><h1 className="text-2xl font-semibold">{employee.firstName} {employee.lastName}</h1><p className="mt-1 text-white/65">{employee.department}</p></div>
-            <Badge className="border-white/15 bg-white/10 text-white">{statusText[employee.status] || employee.status}</Badge>
+            <Badge className="border-white/15 bg-white/10 text-white">Vorgang: {stateLabel(employee.status)}</Badge>
           </div>
         </div>
       </div>
       <div className="mx-auto grid max-w-5xl gap-5 px-5 py-7 sm:px-8 lg:grid-cols-[minmax(0,1fr)_320px]">
         <section className="space-y-5">
+          <Card className="border-[#dce3e7] p-5"><h2 className="font-semibold">Dokumentierter Stand</h2><p className="mt-2 text-sm">Aufgaben: {done} von {employee.tasks.length} erledigt.</p><p className="mt-2 text-sm">Bestand: {inventorySummary(employee.services)}.</p><p className="mt-2 text-sm text-[#667680]">Beantragt oder freigegeben bedeutet keine bestätigte Bereitstellung. Aufgabenabschluss bestätigt keinen Bestand. Angaben stammen aus der Dokumentation, ohne aktuelle Systemabfrage.</p>{employee.referenceProfile && <p className="mt-3 text-sm">Berechtigungen nach Referenzprofil</p>}</Card>
           {error && <div className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-800">{error}</div>}
           <Card className="border-[#dce3e7] p-5">
             <div className="flex items-center justify-between gap-4"><div><h2 className="font-semibold">Aufgaben</h2><p className="mt-1 text-sm text-[#667680]">Aufgaben werden nach interner Anmeldung bearbeitet. Diese Ansicht ist nur lesbar.</p></div><strong className="text-2xl text-[#176b87]">{percent}%</strong></div>
@@ -94,11 +84,11 @@ export function PublicStatusView({ token }: { token: string }) {
               })}
             </div>
           </Card>
-          <Card className="border-[#dce3e7] p-5"><h2 className="font-semibold">Bereitgestellte Zugänge und Geräte</h2><div className="mt-4 grid gap-3 sm:grid-cols-2">{employee.services.map((service) => <div key={service.id} className="rounded-xl border border-[#e1e7ea] p-3"><p className="text-sm font-medium">{service.label}</p><p className="mt-1 text-xs text-[#78858f]">{service.category} · {service.status}</p></div>)}</div></Card>
+          <Card className="border-[#dce3e7] p-5"><h2 className="font-semibold">Zugänge und Geräte</h2>{[["Bestätigt dokumentiert", employee.services.filter((service) => ["active", "removed"].includes(service.status))], ["Beantragt / weitere nicht bestätigte Einträge", employee.services.filter((service) => !["active", "removed"].includes(service.status))]].map(([label, items]) => <section key={label as string} className="mt-4"><h3 className="text-sm font-medium">{label as string}</h3><div className="mt-2 grid gap-3 sm:grid-cols-2">{(items as ServiceItem[]).length ? (items as ServiceItem[]).map((service) => <div key={service.id} className="rounded-xl border border-[#e1e7ea] p-3"><p className="text-sm font-medium">{service.label}</p><p className="mt-1 text-xs text-[#667680]">{service.category} · {stateLabel(service.status)}</p></div>) : <p className="text-sm text-[#667680]">Keine Einträge.</p>}</div></section>)}</Card>
         </section>
         <aside className="space-y-5">
           <Card className="border-[#dce3e7] p-5"><div className="flex items-center gap-2"><ListChecks className="size-5 text-[#176b87]" /><h2 className="font-semibold">Vorgang</h2></div><dl className="mt-4 space-y-3 text-sm"><div><dt className="text-[#78858f]">Fortschritt</dt><dd className="font-medium">{done} von {employee.tasks.length} Aufgaben</dd></div><div><dt className="text-[#78858f]">Termin</dt><dd className="font-medium">{formatDate(employee.endDate || employee.startDate)}</dd></div></dl></Card>
-          <Card className="border-[#dce3e7] p-5"><div className="flex items-center gap-2"><Clock3 className="size-5 text-[#176b87]" /><h2 className="font-semibold">Letzte Automation</h2></div>{latestRun ? <div className="mt-4"><Badge variant="outline">{statusText[latestRun.status] || latestRun.status}</Badge><p className="mt-3 text-sm text-[#667680]">{formatDate(latestRun.completedAt || latestRun.startedAt)}</p></div> : <p className="mt-4 text-sm text-[#667680]">Noch keine Automation ausgeführt.</p>}</Card>
+          <Card className="border-[#dce3e7] p-5"><div className="flex items-center gap-2"><Clock3 className="size-5 text-[#176b87]" /><h2 className="font-semibold">Letzter Automationslauf</h2></div>{latestRun ? <div className="mt-4"><Badge variant="outline">{stateLabel(latestRun.status)}</Badge><p className="mt-2 text-sm">{latestRun.mode === "WhatIf" ? "Testlauf (WhatIf) – keine echte Bereitstellung" : latestRun.operation === "rollback" ? "Rücknahme" : "Echte Ausführung"}</p><p className="mt-3 text-sm text-[#667680]">{formatDate(latestRun.completedAt || latestRun.startedAt)}</p><p className="mt-3 text-sm text-[#667680]">Vorgangsabschluss, Aufgabenfortschritt und dieser Lauf sind getrennte Angaben. { ["failed", "partial", "review_required"].includes(latestRun.status) ? "Ein Fehler ist hier nicht als behoben bestätigt. Details werden intern geprüft." : "Aus diesem Ergebnis allein folgt kein bestätigter Gesamtbestand."}</p></div> : <p className="mt-4 text-sm text-[#667680]">Noch keine Automation ausgeführt.</p>}</Card>
           <p className="px-1 text-xs leading-5 text-[#78858f]">Diese Ansicht erlaubt keine Benutzeranlage, keine AD-Änderungen und keinen Zugriff auf Zugangsdaten.</p>
         </aside>
       </div>

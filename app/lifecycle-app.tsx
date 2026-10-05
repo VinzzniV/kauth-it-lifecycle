@@ -3,6 +3,8 @@
 import { type FormEvent, useEffect, useRef, useState } from "react";
 import { readHrRows } from "@/lib/hr-import";
 import { randomId } from "@/lib/random-id";
+import { filterTasks, groupRuns, referenceMetadata, ruleOrigins, runGuidance, stateLabel, statusText, successfulRetry, type TaskFilter } from "@/lib/ui-projections";
+import { ExecutionApprovalInfo, LatestResult, RecordSummary, RollbackInfo } from "./ui-info";
 import {
   Activity,
   Bot,
@@ -48,6 +50,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
+  DialogClose,
   DialogDescription,
   DialogFooter,
   DialogHeader,
@@ -112,28 +115,8 @@ const viewMeta: Record<AppView, { title: string; eyebrow: string }> = {
   overview: { title: "Lifecycle-Übersicht", eyebrow: "Heute" },
   people: { title: "Mitarbeiterakten", eyebrow: "Personen" },
   tasks: { title: "Aufgaben", eyebrow: "Arbeitsvorrat" },
-  automations: { title: "Automationen", eyebrow: "AD & HelpDesk" },
+  automations: { title: "Automationen", eyebrow: "Planung und Freigabe" },
   "master-data": { title: "Stammdaten", eyebrow: "Konfiguration" },
-};
-const statusText: Record<string, string> = {
-  pending: "In Prüfung",
-  active: "Aktiv",
-  leaving: "Austritt läuft",
-  inactive: "Inaktiv",
-  completed: "Abgeschlossen",
-  requested: "Beantragt",
-  approved: "Freigegeben",
-  remove: "Zu entfernen",
-  removed: "Entfernt",
-  open: "Offen",
-  ready: "Bereit",
-  done: "Erledigt",
-  queued: "Wartet",
-  partial: "Teilweise",
-  failed: "Fehlgeschlagen",
-  review_required: "Prüfung erforderlich",
-  reviewed: "Manuell geprüft",
-  rolled_back: "Zurückgenommen",
 };
 const executionActionText: Record<string, string> = {
   UpdateAdUser: "Benutzerkonto aktualisieren",
@@ -275,6 +258,7 @@ export function LifecycleApp({ view = "overview" }: { view?: AppView }) {
   const [query, setQuery] = useState("");
   const [importOpen, setImportOpen] = useState(false);
   const [detailOpen, setDetailOpen] = useState(false);
+  const [recordTab, setRecordTab] = useState("inventory");
   const [draft, setDraft] = useState<EmployeeRecord | null>(null);
   const [importError, setImportError] = useState("");
   const [saving, setSaving] = useState(false);
@@ -381,16 +365,9 @@ export function LifecycleApp({ view = "overview" }: { view?: AppView }) {
     (item) => item.status !== "completed",
   );
   const allTasks = employees.flatMap((employee) =>
-    employee.tasks.map((task) => ({ ...task, employee })),
+    referenceMetadata(employee).tasks.map((task) => ({ ...task, employee })),
   );
   const openTasks = allTasks.filter((item) => item.status !== "done");
-  const completion = allTasks.length
-    ? Math.round(
-        (allTasks.filter((item) => item.status === "done").length /
-          allTasks.length) *
-          100,
-      )
-    : 0;
 
   async function readFile(file: File) {
     setImportError("");
@@ -493,10 +470,10 @@ export function LifecycleApp({ view = "overview" }: { view?: AppView }) {
     <div className="min-h-screen bg-[#f3f6f8] text-[#162033]">
       <Sidebar view={view} />
       <main className="lg:pl-[244px]">
-        <nav aria-label="Navigation" className="flex gap-1 overflow-x-auto bg-[#132238] p-2 text-sm text-white lg:hidden">
+        <nav aria-label="Navigation" className="flex flex-wrap gap-1 bg-[#132238] p-2 text-sm text-white lg:hidden">
           {[["/", "Übersicht"], ["/mitarbeiter", "Mitarbeiter"], ["/aufgaben", "Aufgaben"], ["/automationen", "Automationen"], ["/stammdaten", "Stammdaten"], ["/diagnose", "Diagnose"]].map(([href, label]) => <a key={href} href={href} className="shrink-0 rounded-lg px-3 py-2 hover:bg-white/10">{label}</a>)}
         </nav>
-        <header className="sticky top-0 z-10 flex h-[76px] items-center justify-between border-b border-[#dfe5e8] bg-white/95 px-5 backdrop-blur lg:px-8">
+        <header className="sticky top-0 z-10 flex min-h-[76px] flex-wrap items-center justify-between gap-3 border-b border-[#dfe5e8] bg-white/95 px-5 py-3 backdrop-blur lg:px-8">
           <div>
             <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#708090]">
               {viewMeta[view].eyebrow}
@@ -506,14 +483,14 @@ export function LifecycleApp({ view = "overview" }: { view?: AppView }) {
             </h1>
           </div>
           <div className="flex items-center gap-3">
-            <div className="relative hidden md:block">
+            <div className="relative">
               <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-[#82909c]" />
               <Input
                 aria-label="Mitarbeiter suchen"
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
                 placeholder="Name oder Personalnummer"
-                className="w-[250px] bg-[#f5f7f8] pl-9"
+                className="w-[200px] bg-[#f5f7f8] pl-9 md:w-[250px]"
               />
             </div>
             <Button
@@ -547,17 +524,18 @@ export function LifecycleApp({ view = "overview" }: { view?: AppView }) {
                 <Overview
                   employees={activeProcesses}
                   allTasks={activeProcesses.flatMap((employee) =>
-                    employee.tasks.map((task) => ({ ...task, employee })),
+                    referenceMetadata(employee).tasks.map((task) => ({ ...task, employee })),
                   )}
                   openTasks={openTasks.filter(
                     (task) => task.employee.status !== "completed",
                   )}
-                  completion={completion}
+                  completion={activeProcesses.flatMap((employee) => referenceMetadata(employee).tasks).length ? Math.round(activeProcesses.flatMap((employee) => referenceMetadata(employee).tasks).filter((task) => task.status === "done").length / activeProcesses.flatMap((employee) => referenceMetadata(employee).tasks).length * 100) : 0}
                   active={
                     active?.status === "completed" ? activeProcesses[0] : active
                   }
                   setActive={(person) => {
                     setActiveId(person.id);
+                    setRecordTab("inventory");
                     setDetailOpen(true);
                   }}
                   onTask={updateTask}
@@ -568,8 +546,11 @@ export function LifecycleApp({ view = "overview" }: { view?: AppView }) {
                   employees={filtered}
                   setActive={(person) => {
                     setActiveId(person.id);
+                    setRecordTab("inventory");
                     setDetailOpen(true);
                   }}
+                  query={query}
+                  resetSearch={() => setQuery("")}
                   onDrop={(file) => {
                     setImportOpen(true);
                     readFile(file);
@@ -577,7 +558,7 @@ export function LifecycleApp({ view = "overview" }: { view?: AppView }) {
                 />
               )}
               {view === "tasks" && (
-                <TasksView tasks={allTasks} onTask={updateTask} />
+                <TasksView tasks={allTasks.filter((task) => filtered.some((person) => person.id === task.employee.id))} onTask={updateTask} onOpen={(person) => { setActiveId(person.id); setRecordTab("tasks"); setDetailOpen(true); }} />
               )}
               {view === "automations" && (
                 <AutomationsView
@@ -585,7 +566,7 @@ export function LifecycleApp({ view = "overview" }: { view?: AppView }) {
                   employees={filtered}
                   active={active}
                   setActive={(person) => setActiveId(person.id)}
-                  openRecord={() => setDetailOpen(true)}
+                  openRecord={() => { setRecordTab("automation"); setDetailOpen(true); }}
                   onRefresh={() => void refreshEmployees()}
                   masterData={masterData}
                 />
@@ -620,6 +601,7 @@ export function LifecycleApp({ view = "overview" }: { view?: AppView }) {
           onDelete={deleteEmployee}
           onRefresh={() => void refreshEmployees()}
           masterData={masterData}
+          initialTab={recordTab}
         />
       )}
     </div>
@@ -728,9 +710,9 @@ function Overview({
 }) {
   return (
     <>
-      <section className="mb-7 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      <section className="mb-7 grid grid-cols-2 gap-3 xl:grid-cols-4">
         <Metric
-          label="Mitarbeiterakten"
+          label="Offene Vorgänge"
           value={employees.length}
           icon={<UsersRound />}
           tone="navy"
@@ -751,11 +733,11 @@ function Overview({
           detail="Agent-Aufträge"
         />
         <Metric
-          label="Dokumentation"
+          label="Aufgabenfortschritt"
           value={`${completion}%`}
           icon={<ShieldCheck />}
           tone="green"
-          detail="aller Aufgaben abgeschlossen"
+          detail="Aufgaben der offenen Vorgänge erledigt"
         />
       </section>
       <div className="grid gap-6 xl:grid-cols-[minmax(0,1.55fr)_minmax(320px,.75fr)]">
@@ -767,7 +749,7 @@ function Overview({
               Manuell und automatisierbar
             </p>
           </div>
-          <TaskList tasks={openTasks.slice(0, 5)} onTask={onTask} />
+          <TaskList tasks={openTasks.slice(0, 5)} onTask={onTask} onOpen={setActive} />
         </Card>
       </div>
       {active && (
@@ -809,10 +791,14 @@ function PeopleView({
   employees,
   setActive,
   onDrop,
+  query,
+  resetSearch,
 }: {
   employees: EmployeeRecord[];
   setActive: (person: EmployeeRecord) => void;
   onDrop: (file: File) => void;
+  query: string;
+  resetSearch: () => void;
 }) {
   const [dragging, setDragging] = useState(false);
   return (
@@ -840,30 +826,36 @@ function PeopleView({
         </span>
         <Upload className="size-6 text-[#176b87]" />
       </button>
-      <EmployeeTable employees={employees} onOpen={setActive} full />
+      <EmployeeTable employees={employees} onOpen={setActive} full searching={Boolean(query)} resetSearch={resetSearch} />
     </div>
   );
 }
 function TasksView({
   tasks,
   onTask,
+  onOpen,
 }: {
   tasks: Array<TaskItem & { employee: EmployeeRecord }>;
+  onOpen?: (person: EmployeeRecord) => void;
   onTask: (
     person: EmployeeRecord,
     task: TaskItem,
     status: TaskItem["status"],
   ) => void;
 }) {
+  const [filter, setFilter] = useState<TaskFilter>("open");
+  const visible = filterTasks(tasks, filter);
   return (
     <Card className="border-[#dce3e7] bg-white p-5">
       <div className="mb-5">
-        <h2 className="font-semibold">Alle Aufgaben</h2>
+        <h2 className="font-semibold">{filter === "open" ? "Offene Aufgaben" : filter === "done" ? "Erledigte Aufgaben" : "Alle Aufgaben"}</h2>
         <p className="mt-1 text-sm text-[#71808c]">
           Manuelle und automatisierbare Schritte aus allen Vorgängen
         </p>
       </div>
-      <TaskList tasks={tasks} onTask={onTask} />
+      <div className="mb-4 flex gap-2" aria-label="Aufgabenstatus">{([["open", "Offen"], ["done", "Erledigt"], ["all", "Alle"]] as const).map(([value, label]) => <Button key={value} variant={filter === value ? "default" : "outline"} aria-pressed={filter === value} onClick={() => setFilter(value)}>{label}</Button>)}</div>
+      {!visible.length && <p className="mb-3 text-sm">{filter === "open" ? "Keine offenen Aufgaben in dieser Auswahl." : "Keine Aufgaben in dieser Auswahl."}{filter === "open" && <Button variant="link" onClick={() => setFilter("done")}>Erledigte anzeigen</Button>}</p>}
+      {!!visible.length && <TaskList tasks={visible} onTask={onTask} onOpen={onOpen} />}
     </Card>
   );
 }
@@ -1326,6 +1318,10 @@ function AutomationsView({
       </Card>
       {active && job && (
         <div className="space-y-5">
+          <RecordSummary person={active} />
+          <LatestResult person={active} />
+          <Button variant="outline" onClick={openRecord}>Ergebnis in der Akte ansehen</Button>
+          <p className="text-sm text-[#667680]">Neuen vollständigen Auftrag vorbereiten: Dieser Plan umfasst alle angezeigten Aktionen. Er ist keine Einzelwiederholung eines bisherigen Laufs. Wiederholungen stehen in der Akte nur für nachweislich fehlgeschlagene Aktionen unter den bestehenden Sicherheitsprüfungen bereit.</p>
           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
             <IntegrationCard
               icon={<Server />}
@@ -1522,20 +1518,21 @@ function AutomationsView({
                 Akte öffnen
               </Button>
             </div>
-            <div className="mt-5 space-y-2">
+            <details><summary className="cursor-pointer text-sm font-medium">Geplante Aktionen und Regelherkunft</summary><div className="mt-5 space-y-2">
               {job.actions.map((action) => (
                 <div
                   key={`${action.type}-${action.target}`}
                   className="flex items-center gap-3 rounded-xl border border-[#e1e7ea] px-4 py-3"
                 >
                   <Check className="size-4 text-[#176b87]" />
-                  <span className="text-sm font-medium">{executionActionLabel(action.type)}</span>
+                  <span className="text-sm font-medium">{executionActionLabel(action.type)}<span className="mt-1 block text-xs font-normal">{ruleOrigins(action, job, masterData).map((origin) => <a key={origin.label} href={origin.href} className="mr-2 text-[#176b87] underline">{origin.label}</a>)} · Als Agent-Schritt geplant; Ausführung nach Freigabe.</span></span>
                   <span className="ml-auto max-w-[50%] truncate text-xs text-[#78858f]">
                     {action.target}
                   </span>
                 </div>
               ))}
             </div>
+            </details>
           </Card>
           <Card className="overflow-hidden border-[#263a54] bg-[#132238] text-white">
             <div className="flex items-center justify-between border-b border-white/10 px-5 py-4">
@@ -1559,14 +1556,14 @@ function AutomationsView({
                 Speichern
               </Button>
             </div>
-            <pre className="max-h-80 overflow-auto p-5 text-sm leading-6 text-[#c8d7e5]">
+            <details className="px-5 pb-4"><summary className="cursor-pointer text-sm">Technische Auftragsvorschau anzeigen</summary><pre className="max-h-80 overflow-auto p-5 text-sm leading-6 text-[#c8d7e5]">
               {buildPowerShellPreview(active, job)}
-            </pre>
+            </pre></details>
           </Card>
           <Card className="border-[#dce3e7] bg-white p-5">
             <div className="flex flex-wrap items-center justify-between gap-4">
               <div>
-                <p className="font-medium">Auf dem Windows-Jobserver starten</p>
+                <p className="font-medium">Neuen vollständigen Auftrag vorbereiten</p>
                 <p className="mt-1 max-w-2xl text-sm leading-6 text-[#71808c]">
                   Testlauf und echte Ausführung erzeugen einen nachvollziehbaren
                   Ergebnisdatensatz. AD-Zugangsdaten werden nur für den
@@ -1584,7 +1581,7 @@ function AutomationsView({
                   onClick={() => askForCredentials("WhatIf")}
                 >
                   <Bot className="size-4" />
-                  WhatIf
+                  Testlauf (WhatIf)
                 </Button>
                 <AlertDialog>
                   <AlertDialogTrigger asChild>
@@ -1608,11 +1605,10 @@ function AutomationsView({
                         Automation wirklich ausführen?
                       </AlertDialogTitle>
                       <AlertDialogDescription>
-                        Der Agent verändert Active Directory und erstellt das
-                        Helpdesk-Ticket. Jede tatsächliche Änderung wird für den
-                        späteren Rollback protokolliert.
+                        Sie geben die unten genannten Aktionen dieses ausgewählten Auftrags frei.
                       </AlertDialogDescription>
                     </AlertDialogHeader>
+                    <ExecutionApprovalInfo job={job} />
                     <AlertDialogFooter>
                       <AlertDialogCancel>Abbrechen</AlertDialogCancel>
                       <AlertDialogAction
@@ -1675,9 +1671,7 @@ function AutomationsView({
                       variant="outline"
                       className={badgeClass(latestExecution.status ?? "")}
                     >
-                      {statusText[latestExecution.status ?? ""] ??
-                        latestExecution.status ??
-                        "Ergebnis"}
+                      {stateLabel(latestExecution.status ?? "")}
                     </Badge>
                   </div>
                   {latestExecution.error && (
@@ -1754,6 +1748,10 @@ function MasterDataView({
   onDelete: (id: string) => Promise<boolean>;
 }) {
   const [kind, setKind] = useState<MasterDataKind>("group");
+  useEffect(() => {
+    const register = new URLSearchParams(window.location.search).get("register");
+    if (register && Object.keys(kindText).includes(register)) queueMicrotask(() => setKind(register as MasterDataKind));
+  }, []);
   const [label, setLabel] = useState("");
   const [value, setValue] = useState("");
   const [owner, setOwner] = useState("IT");
@@ -1801,7 +1799,7 @@ function MasterDataView({
           <div className="border-b px-5 py-4">
             <h2 className="font-semibold">{kindText[kind]}</h2>
             <p className="mt-1 text-sm text-[#71808c]">
-              Diese Werte steuern Vorschläge und Automationsaufträge. Aufgabenwert agent führt automatisch aus, manual oder deaktiviert nicht. AD-Computeranlage ist eine separate Regel; physische Gerätebereitstellung bleibt manuell.
+              Diese Werte steuern Vorschläge und Automationsaufträge. Aufgabenwert „agent“ plant einen Agent-Schritt; echte Ausführung erst nach ausdrücklicher Freigabe. „manual“ oder deaktivierte Regeln bleiben manuell. AD-Computeranlage ist eine separate Regel; physische Gerätebereitstellung bleibt manuell.
             </p>
           </div>
           <Table>
@@ -1885,10 +1883,14 @@ function EmployeeTable({
   employees,
   onOpen,
   full = false,
+  searching = false,
+  resetSearch,
 }: {
   employees: EmployeeRecord[];
   onOpen: (person: EmployeeRecord) => void;
   full?: boolean;
+  searching?: boolean;
+  resetSearch?: () => void;
 }) {
   return (
     <Card className="overflow-hidden border-[#dce3e7] bg-white shadow-[0_8px_30px_rgba(27,45,63,.05)]">
@@ -1932,9 +1934,9 @@ function EmployeeTable({
                       {initials(person)}
                     </div>
                     <div>
-                      <p className="font-medium">
+                      <button className="text-left font-medium text-[#176b87] underline-offset-4 hover:underline" onClick={(event) => { event.stopPropagation(); onOpen(person); }} aria-label={`Akte öffnen: ${person.firstName} ${person.lastName}`}>
                         {person.firstName} {person.lastName}
-                      </p>
+                      </button>
                       <p className="text-xs text-[#7a8790]">
                         #{person.personnelNumber} ·{" "}
                         {person.department || "Keine Abteilung"}
@@ -1972,8 +1974,7 @@ function EmployeeTable({
       </Table>
       {!employees.length && (
         <div className="p-8 text-center text-sm text-[#71808c]">
-          Keine offenen Vorgänge. Abgeschlossene Akten bleiben unter
-          „Mitarbeiterakten“ erhalten.
+          {searching ? <>Keine Mitarbeiter für diese Suche gefunden.<Button variant="link" onClick={resetSearch}>Suche zurücksetzen</Button></> : full ? "Noch keine Mitarbeiterakten vorhanden." : "Keine offenen Vorgänge. Abgeschlossene Akten bleiben unter Mitarbeiterakten erhalten."}
         </div>
       )}
     </Card>
@@ -1982,8 +1983,10 @@ function EmployeeTable({
 function TaskList({
   tasks,
   onTask,
+  onOpen,
 }: {
   tasks: Array<TaskItem & { employee: EmployeeRecord }>;
+  onOpen?: (person: EmployeeRecord) => void;
   onTask: (
     person: EmployeeRecord,
     task: TaskItem,
@@ -1992,6 +1995,7 @@ function TaskList({
 }) {
   return (
     <div className="space-y-3">
+      {!tasks.length && <p className="text-sm text-[#667680]">Keine offenen Aufgaben in dieser Auswahl.</p>}
       {tasks.map((task) => (
         <div
           key={`${task.employee.id}-${task.id}`}
@@ -2016,7 +2020,7 @@ function TaskList({
               {task.title}
             </p>
             <p className="mt-1 truncate text-xs text-[#7b8891]">
-              {task.employee.firstName} {task.employee.lastName} · {task.owner}
+              {onOpen ? <button className="text-[#176b87] underline" onClick={() => onOpen(task.employee)} aria-label={`Akte öffnen: ${task.employee.firstName} ${task.employee.lastName}`}>{task.employee.firstName} {task.employee.lastName}</button> : `${task.employee.firstName} ${task.employee.lastName}`} · {task.owner}
             </p>
           </div>
           <Badge
@@ -2054,16 +2058,16 @@ function Metric({
     green: "bg-[#eaf6ef] text-[#24724b]",
   };
   return (
-    <Card className="border-[#dce3e7] bg-white p-5">
-      <div className="mb-4 flex items-start justify-between">
+    <Card className="gap-2 border-[#dce3e7] bg-white p-3 sm:gap-4 sm:p-5">
+      <div className="mb-2 flex items-start justify-between sm:mb-4">
         <p className="text-sm text-[#6d7c87]">{label}</p>
         <div
-          className={`grid size-9 place-items-center rounded-xl [&>svg]:size-4 ${colors[tone]}`}
+          className={`hidden size-9 place-items-center rounded-xl sm:grid [&>svg]:size-4 ${colors[tone]}`}
         >
           {icon}
         </div>
       </div>
-      <p className="text-3xl font-semibold tracking-tight">{value}</p>
+      <p className="text-2xl font-semibold tracking-tight sm:text-3xl">{value}</p>
       <p className="mt-1 text-xs text-[#7b8992]">{detail}</p>
     </Card>
   );
@@ -2279,6 +2283,7 @@ function EmployeeDialog({
   onDelete,
   onRefresh,
   masterData,
+  initialTab,
 }: {
   person: EmployeeRecord;
   open: boolean;
@@ -2291,8 +2296,11 @@ function EmployeeDialog({
   onDelete: (person: EmployeeRecord) => void;
   onRefresh: () => void;
   masterData: MasterDataItem[];
+  initialTab: string;
 }) {
   const job = buildAutomationJob(person, {}, automationOptions(masterData));
+  const projection = referenceMetadata(person);
+  const headingRef = useRef<HTMLHeadingElement>(null);
   const [shareMessage, setShareMessage] = useState("");
   async function changeShare(shareAction: "rotate" | "revoke") {
     try {
@@ -2307,15 +2315,15 @@ function EmployeeDialog({
     : "";
   return (
     <Dialog open={open} onOpenChange={setOpen}>
-      <DialogContent className="max-h-[92vh] overflow-y-auto p-0 sm:max-w-4xl">
-        <div className="bg-[#132238] p-6 text-white">
-          <div className="flex items-start gap-4">
-            <div className="grid size-14 place-items-center rounded-2xl bg-[#5de1d0] text-lg font-semibold text-[#132238]">
+      <DialogContent showCloseButton={false} onOpenAutoFocus={(event) => { event.preventDefault(); headingRef.current?.focus(); }} className="flex max-h-[92vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-4xl">
+        <div className="shrink-0 bg-[#132238] p-4 text-white sm:p-6">
+          <div className="flex flex-wrap items-start gap-3">
+            <div className="hidden size-14 place-items-center rounded-2xl bg-[#5de1d0] text-lg font-semibold text-[#132238] sm:grid">
               {initials(person)}
             </div>
             <div className="flex-1">
               <div className="flex flex-wrap items-center gap-2">
-                <DialogTitle className="text-xl">
+                <DialogTitle ref={headingRef} tabIndex={-1} className="text-xl">
                   {person.firstName} {person.lastName}
                 </DialogTitle>
                 <Badge
@@ -2330,15 +2338,18 @@ function EmployeeDialog({
                 {person.jobTitle || "Keine Stellenbezeichnung"}
               </DialogDescription>
             </div>
+            <div className="flex flex-wrap items-center gap-2">
+            <DialogClose asChild><Button variant="outline" className="border-white/40 bg-white text-[#132238]">Schließen</Button></DialogClose>
+            <details className="relative text-sm"><summary className="cursor-pointer rounded-lg border border-white/40 px-3 py-2">Weitere Aktionen</summary><div className="absolute right-0 z-20 mt-1 rounded-lg border bg-white p-2 text-[#162033]">
             <AlertDialog>
               <AlertDialogTrigger asChild>
                 <Button
                   variant="ghost"
-                  size="icon"
-                  className="text-white/70 hover:bg-white/10 hover:text-white"
+                  className="text-rose-700"
                   aria-label="Mitarbeiter löschen"
                 >
                   <Trash2 className="size-4" />
+                  Mitarbeiter löschen
                 </Button>
               </AlertDialogTrigger>
               <AlertDialogContent>
@@ -2361,13 +2372,14 @@ function EmployeeDialog({
                 </AlertDialogFooter>
               </AlertDialogContent>
             </AlertDialog>
+            </div></details></div>
           </div>
         </div>
-        <Tabs defaultValue="inventory" className="p-6">
-          <TabsList variant="line" className="mb-5 h-auto flex-wrap gap-2">
+        <Tabs key={`${person.id}-${initialTab}`} defaultValue={initialTab} className="flex min-h-0 flex-1 flex-col gap-0 overflow-hidden">
+          <TabsList variant="line" className="h-auto shrink-0 flex-wrap gap-1 border-b bg-white px-3 py-2 sm:px-6">
             <TabsTrigger value="inventory">
               <Boxes />
-              Ausstattung
+              Ausstattung & Bestand
             </TabsTrigger>
             <TabsTrigger value="tasks">
               <ListChecks />
@@ -2382,7 +2394,11 @@ function EmployeeDialog({
               Historie
             </TabsTrigger>
           </TabsList>
+          <div className="min-h-0 overflow-y-auto p-4 sm:p-6" data-testid="record-scroll">
+          <RecordSummary person={person} />
           <TabsContent value="inventory">
+            {(projection.name || projection.references.length > 0) && <section className="mb-4 mt-4 rounded-xl border p-4"><h3 className="font-semibold">Referenzmetadaten</h3><p className="mt-2 text-sm">Berechtigungen nach Referenzprofil: {projection.name || "mehrere Referenzangaben – intern prüfen"}</p><p className="text-xs text-[#667680]">Referenzprüfung: {stateLabel(person.directoryReferenceStatus || "unknown")} · {person.directoryReferenceMessage || "Nicht bestätigt"}</p><p className="mt-2 text-xs text-[#667680]">Referenzangaben sind keine Anwendungen oder Bereitstellungsaufgaben. Historische Einträge bleiben unter Historie erhalten.</p></section>}
+            <details className="mb-4 mt-4"><summary className="cursor-pointer font-medium">Freigegebene Statusansicht</summary>
             <div className="mb-4 flex flex-wrap gap-2">
               <Button variant="outline" onClick={() => void changeShare("rotate")}>Leselink neu erstellen (30 Tage)</Button>
               {person.shareToken && <Button variant="outline" onClick={() => void changeShare("revoke")}>Leselink widerrufen</Button>}
@@ -2399,8 +2415,9 @@ function EmployeeDialog({
                 </a>
               </div>
             )}
+            </details>
             <div className="grid gap-3 sm:grid-cols-2">
-              {person.services.map((service) => (
+              {projection.services.map((service) => (
                 <div
                   key={service.id}
                   className="rounded-xl border border-[#dfe6e9] p-4"
@@ -2416,7 +2433,7 @@ function EmployeeDialog({
                       variant="outline"
                       className={badgeClass(service.status)}
                     >
-                      {statusText[service.status] || service.status}
+                      {stateLabel(service.status)}
                     </Badge>
                   </div>
                 </div>
@@ -2424,8 +2441,8 @@ function EmployeeDialog({
             </div>
           </TabsContent>
           <TabsContent value="tasks">
-            <TaskList
-              tasks={person.tasks.map((task) => ({
+            <TasksView
+              tasks={projection.tasks.map((task) => ({
                 ...task,
                 employee: person,
               }))}
@@ -2433,6 +2450,9 @@ function EmployeeDialog({
             />
           </TabsContent>
           <TabsContent value="automation">
+            <div className="my-4"><LatestResult person={person} /></div>
+            <ExecutionHistory person={person} runs={person.automationRuns ?? []} onRefresh={onRefresh} masterData={masterData} />
+            <details className="mt-5 rounded-xl border p-4"><summary className="cursor-pointer font-medium">Plan / Vorschau eines neuen vollständigen Auftrags</summary>
             <div className="grid gap-4 lg:grid-cols-2">
               <div className="rounded-xl border p-4">
                 <p className="text-xs font-semibold uppercase tracking-wider text-[#78858f]">
@@ -2476,20 +2496,14 @@ function EmployeeDialog({
                   {buildPowerShellPreview(person, job)}
                 </pre>
               </div>
-              <div className="lg:col-span-2">
-                <ExecutionHistory
-                  person={person}
-                  runs={person.automationRuns ?? []}
-                  onRefresh={onRefresh}
-                  masterData={masterData}
-                />
-              </div>
             </div>
+            </details>
           </TabsContent>
           <TabsContent value="history">
+            {(projection.references.length > 0 || projection.referenceTasks.length > 0) && <details className="my-4 rounded-xl border p-3"><summary>Historische Referenzangaben (unverändert erhalten)</summary>{projection.references.map((item) => <p key={item.id} className="mt-2 text-sm">{item.label} · {item.source} · {stateLabel(item.status)}</p>)}{projection.referenceTasks.map((task) => <p key={task.id} className="mt-2 text-sm">{task.title} · {stateLabel(task.status)}</p>)}</details>}
             <div className="mb-5 space-y-3">
               <h3 className="font-semibold">Änderungsprotokoll</h3>
-              {(person.auditEntries ?? []).map((entry) => <div key={entry.id} className="rounded-xl border p-3"><p className="text-sm font-medium">{entry.action}</p><p className="mt-1 break-words text-sm text-[#71808b]">{entry.detail}</p><p className="mt-1 text-xs text-[#94a0a8]">{formatDate(entry.createdAt)}</p></div>)}
+              {(person.auditEntries ?? []).map((entry) => <div key={entry.id} className="rounded-xl border p-3"><p className="text-sm font-medium">{entry.action}</p><p className="mt-1 text-xs text-[#667680]">{formatDate(entry.createdAt)}</p><details><summary className="cursor-pointer text-sm">Protokolldetails</summary><p className="mt-1 break-words text-sm text-[#71808b]">{entry.detail.split(/\b(done|failed|partial|completed|requested|simulated|open|ready)\b/).map((part, index) => <span key={index}>{statusText[part] ?? part}</span>)}</p></details></div>)}
             </div>
             <div className="space-y-4 border-l border-[#ccd8dd] pl-5">
               {person.events.map((event) => (
@@ -2512,6 +2526,7 @@ function EmployeeDialog({
               ))}
             </div>
           </TabsContent>
+          </div>
         </Tabs>
       </DialogContent>
     </Dialog>
@@ -2549,9 +2564,9 @@ function ChangeList({
     >
       <div>
         <p className="text-sm font-medium">{change.action}</p>
-        <p className="mt-1 break-all font-mono text-xs text-[#667680]">
+        <details className="mt-1 text-xs text-[#667680]"><summary className="cursor-pointer">Technische Kennung</summary><p className="break-all font-mono">
           {change.resourceType}: {change.resourceId}
-        </p>
+        </p></details>
       </div>
       <div className="flex items-start gap-2 text-xs text-[#667680]">
         <Link2 className="mt-0.5 size-3.5 shrink-0" />
@@ -2560,10 +2575,10 @@ function ChangeList({
         </span>
       </div>
       {(change.beforeValue || change.afterValue) && (
-        <p className="text-xs text-[#7a8790] sm:col-span-2">
+        <details className="text-xs text-[#667680] sm:col-span-2"><summary className="cursor-pointer">Technische Vorher/Nachher-Daten</summary><p className="break-all">
           Vorher: {formatChangeValue(change.beforeValue)} · Nachher:{" "}
           {formatChangeValue(change.afterValue)}
-        </p>
+        </p></details>
       )}
     </div>
   );
@@ -2764,7 +2779,7 @@ function ExecutionHistory({
           {message}
         </div>
       )}
-      {runs.map((run) => (
+      {groupRuns(runs).map((group, index) => <details key={group.root.id} open={index === 0} className="rounded-xl border bg-[#f8fafb] p-3"><summary className="cursor-pointer text-sm font-semibold">Ausgangslauf · {formatDate(group.root.startedAt)} · {stateLabel(group.root.status)}{group.related.length > 0 ? ` · ${group.related.length} zugeordnete Wiederholungen / Rücknahmen` : ""}</summary><div className="mt-3 space-y-3">{[group.root, ...group.related].map((run) => (
         <Card key={run.id} className="border-[#dce3e7] p-4">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
@@ -2775,18 +2790,16 @@ function ExecutionHistory({
                     : run.operation === "reference_check"
                       ? "Referenzprüfung"
                       : run.operation === "rollback"
-                        ? "Rollback"
+                        ? "Rücknahme"
                         : run.mode === "WhatIf"
-                          ? "Testlauf"
+                          ? "Testlauf (WhatIf)"
                           : "Ausführung"}
                 </Badge>
                 <span className="text-sm font-medium">
-                  {statusText[run.status] ?? run.status}
+                  {stateLabel(run.status)}
                 </span>
               </div>
-              <p className="mt-2 text-xs text-[#7a8790]">
-                {formatDate(run.completedAt ?? run.startedAt)} · {run.jobId}
-              </p>
+              <details className="mt-2 text-xs text-[#667680]"><summary>Technische Laufkennungen</summary><p>{formatDate(run.completedAt ?? run.startedAt)} · {run.jobId}</p></details>
               {run.operation === "execute" && run.relatedRunId && (
                 <p className="mt-1 text-xs text-[#7a8790]">
                   Wiederholung aus Lauf {run.relatedRunId}
@@ -2805,40 +2818,23 @@ function ExecutionHistory({
                     Rückgängig machen
                   </Button>
                 </AlertDialogTrigger>
-                <AlertDialogContent>
+                <AlertDialogContent className="max-h-[90vh] overflow-y-auto">
                   <AlertDialogHeader>
                     <AlertDialogTitle>
-                      Diese Ausführung rückgängig machen?
+                      Unterstützte Änderungen dieses Laufs zurücknehmen?
                     </AlertDialogTitle>
                     <AlertDialogDescription>
-                      Der Agent arbeitet ausschließlich die unten
-                      protokollierten Änderungen in umgekehrter Reihenfolge ab.
-                      Manuelle Schritte und nicht sicher stornierbare Tickets
-                      bleiben sichtbar.
+                      Dies ist eine begrenzte Rücknahme, keine vollständige Rückabwicklung. Der Umfang stammt aus dem ausgewählten Lauf.
                     </AlertDialogDescription>
                   </AlertDialogHeader>
-                  <div className="max-h-64 space-y-2 overflow-auto">
-                    {run.changes
-                      .filter((change) => change.rollbackAction !== "manual")
-                      .map((change) => (
-                        <div
-                          key={change.id}
-                          className="rounded-lg border p-3 text-sm"
-                        >
-                          <p className="font-medium">{change.rollbackAction}</p>
-                          <p className="mt-1 text-xs text-[#71808c]">
-                            {change.resourceType}: {change.resourceId}
-                          </p>
-                        </div>
-                      ))}
-                  </div>
+                  <RollbackInfo run={run} person={person} />
                   <AlertDialogFooter>
                     <AlertDialogCancel>Abbrechen</AlertDialogCancel>
                     <AlertDialogAction
                       variant="destructive"
                       onClick={() => setRollbackRun(run)}
                     >
-                      Rollback starten
+                      Rücknahme vorbereiten
                     </AlertDialogAction>
                   </AlertDialogFooter>
                 </AlertDialogContent>
@@ -2849,7 +2845,7 @@ function ExecutionHistory({
             <div className="mt-4 rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-900">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <p className="font-medium">Fehler des Management-Agenten</p>
-                {run.operation === "execute" && run.mode === "Execute" && ["partial", "failed", "reviewed"].includes(run.status) && (run.actionResults ?? []).filter((item) => item.status === "failed" && !runs.some((candidate) => candidate.relatedRunId === run.id && candidate.actionResults?.some((result) => result.action === item.action && result.status === "completed"))).map((item) => (
+                {run.operation === "execute" && run.mode === "Execute" && ["partial", "failed", "reviewed"].includes(run.status) && (run.actionResults ?? []).filter((item) => item.status === "failed" && !successfulRetry(runs, run, item.action)).map((item) => (
                   <Button key={item.action} variant="outline" size="sm" className="border-rose-300 bg-white text-rose-800 hover:bg-rose-100" onClick={() => { setSelectedRetryAction(item.action); setRetryRun(run); }}>
                     <RotateCcw className="size-4" />{executionActionLabel(item.action)} wiederholen
                   </Button>
@@ -2871,6 +2867,7 @@ function ExecutionHistory({
             </div>
           )}
           <div className="mt-4">
+            <p className="mb-3 text-sm text-[#667680]">{runGuidance(run, runs)}</p>
             {(run.status === "review_required" || run.actionResults?.some((item) => item.status === "review_required")) && <div className="mb-3 space-y-2 rounded-lg border border-amber-300 bg-amber-50 p-3"><p className="text-sm">Keine automatische Wiederholung: Der externe Zustand muss zuerst manuell geprüft werden.</p>{run.operation === "rollback" ? <Button variant="outline" onClick={() => openReview(run, "rollback")}>Rücknahmekonflikt klären</Button> : (run.actionResults?.filter((item) => item.status === "review_required").length ? run.actionResults.filter((item) => item.status === "review_required").map((item) => <Button key={item.action} variant="outline" onClick={() => openReview(run, item.action)}>{executionActionLabel(item.action)} klären</Button>) : <Button variant="outline" onClick={() => openReview(run, "unknown")}>Unbekannte Wirkung klären</Button>)}</div>}
             {(run.actionResults ?? []).length > 0 && <div className="mb-3 space-y-2">{run.actionResults?.map((item) => <div key={item.action} className="rounded-lg border p-2 text-sm"><span className="font-medium">{executionActionLabel(item.action)}</span> · {item.status === "review_required" ? "Prüfung erforderlich – externe Wirkung klären, keine automatische Wiederholung" : statusText[item.status] ?? item.status}{item.error && <p className="mt-1 break-words text-rose-700">{item.error}</p>}</div>)}</div>}
             {run.status === "queued" && !run.changes.length ? (
@@ -2882,7 +2879,7 @@ function ExecutionHistory({
             )}
           </div>
         </Card>
-      ))}
+      ))}</div></details>)}
     </div>
   );
 }

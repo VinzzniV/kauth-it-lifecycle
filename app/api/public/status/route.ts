@@ -1,5 +1,7 @@
 import { desc, eq } from "drizzle-orm";
 import { z } from "zod";
+import { publicLists } from "../../../../lib/ui-projections";
+import type { EmployeeRecord } from "../../../data";
 import { getDb } from "../../../../db";
 import {
   automationRuns,
@@ -37,6 +39,7 @@ export async function GET(request: Request) {
     db.select().from(automationRuns).where(eq(automationRuns.employeeId, employee.id)).orderBy(desc(automationRuns.startedAt)),
   ]);
 
+  const projection = publicLists({ services: assignedServices, tasks: tasks.filter((task) => !task.lifecycleEventId || task.lifecycleEventId === events[0]?.id), directoryReferenceUser: employee.directoryReferenceUser } as unknown as EmployeeRecord);
   return Response.json({
     employee: {
       firstName: employee.firstName,
@@ -45,11 +48,10 @@ export async function GET(request: Request) {
       status: employee.status,
       startDate: employee.startDate,
       endDate: employee.endDate,
-      tasks: tasks.filter((task) => !task.lifecycleEventId || task.lifecycleEventId === events[0]?.id).map((task) => ({ id: task.id, eventType: task.eventType, title: task.title, owner: task.owner, executionType: task.executionType, status: task.status, dueDate: task.dueDate, completedAt: task.completedAt })),
-      services: assignedServices.map((service) => ({ id: service.id, label: service.label, category: service.category, status: service.status })),
+      ...projection,
       events: events.map((event) => ({ type: event.type, status: event.status })),
       automationRuns: runs.map((run) => ({
-        status: run.status, startedAt: run.startedAt, completedAt: run.completedAt,
+        status: run.status, mode: run.mode, operation: run.operation, startedAt: run.startedAt, completedAt: run.completedAt,
       })),
     },
   }, { headers: { "cache-control": "no-store", "referrer-policy": "no-referrer" } });

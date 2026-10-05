@@ -47,6 +47,29 @@ Update prueft Git/Image/Queue/Volume, stoppt Web und Gateway, erstellt Wartungsb
 Bei spaeterem HTTPS-/Identitaetswechsel den Testwrapper nicht einfach auf echte Aktionen umstellen: Adress-/Zertifikatsvertrauen, delegierte Identitaet und erforderliche Sicherheits-/Netzfreigaben separat festlegen. Reale WhatIf- und Schreibtests benoetigen weiterhin eine gesonderte Freigabe. Zertifikatsschluessel-Restore, externe Backupaufbewahrung und RPO/RTO bleiben fuer den spaeteren Betrieb offen.
 
 
+## Isolierte UI/UX-Vorschau
+
+Arbeitskopie `C:\IT-Lifecycle\work\ui-ux`, Branch `implementation/ui-ux-audit`. URL `http://PK-SRVJOB001:18081` bzw. lokal `http://localhost:18081`. Port 8080 und dessen Konfiguration/Daten bleiben unverändert. Die Vorschau enthält ausschließlich synthetische Leseansichten; Speichern und Auftragserstellung werden blockiert.
+
+```powershell
+Set-Location C:\IT-Lifecycle\work\ui-ux
+# Node-22-Werkzeugpfad bei Bedarf nur für diese PowerShell ergänzen.
+$env:PATH='C:\IT-Lifecycle\work\tools\node-v22.23.3-win-x64;'+$env:PATH
+npm ci
+npm run build
+docker volume create kauth_ui_ux_preview_data
+docker network inspect kauth-ui-ux-isolated
+# Nur falls noch nicht vorhanden: docker network create kauth-ui-ux-isolated
+docker compose -p kauth-ui-ux -f docker-compose.ui-preview.yml up -d
+node tests/ui/verify-browser.mjs
+# Vorschau stoppen; Volumes/Belege bleiben erhalten:
+docker compose -p kauth-ui-ux -f docker-compose.ui-preview.yml stop
+```
+
+Vor erneutem Build laufende Vorschau stoppen, da die Buildartefakte schreibgeschützt eingebunden sind. Beim Update des Testdatendienstes den Vorschaucontainer neu starten. Das Basisimage `kauth/it-lifecycle:v1-http-46968c8` muss lokal vorhanden sein; kein automatischer Main-Pull oder Produktionsupdate. Testimage und Worktree-Mounts sind im [Umsetzungsbericht](UI-UX-IMPLEMENTATION-REPORT.md) beschrieben.
+
+Regressionen: `npm test`, `npx tsc --noEmit --incremental false`, `npm run lint`, `npm run build`; vorhandene PowerShell-Suiten mit Windows PowerShell 5.1 und den vorgesehenen lokalen Testadaptern. Für den vorhandenen Integrationstest: `TEST_IMAGE=kauth/it-lifecycle:v1-http-46968c8` und `TEST_SOURCE_OVERLAY=1` nur in der aktuellen Prozessumgebung setzen und `node tests/integration/acceptance.mjs` starten. Er erzeugt eigene Volumes/Container auf 18080/18788; keine echten Jobs starten. Für `Run-NativeModuleRegression.mjs` zunächst `node --import tsx tests/ui/export-whatif.ts`, dann den erzeugten synthetischen Pfad `work/whatif-job.json` übergeben.
+
 ## Verzeichnis und Unterlagen
 
 README.md ist der Einstieg, OPERATIONS.md die aktuelle Betriebsanleitung. docs/archive enthaelt historische Entwicklungs- und Pruefstaende; docs/planned enthaelt Anforderungen fuer die spaetere HTTPS-/Dienstumstellung. Diese Unterlagen beschreiben keinen aktiven Produktionsbetrieb. Lokale alte Abnahmebelege sind ausserhalb des Repositorys unter C:\ProgramData\Kauth\ITLifecycle\Archives archiviert. work/v1 bleibt die V1-Rueckfallarbeitskopie. work/tools bleibt fuer lokale Entwicklung erhalten. Die drei lokalen Testbetriebsskripte in work bleiben wegen ihrer Task- und Skriptreferenzen an ihrem bisherigen Platz.

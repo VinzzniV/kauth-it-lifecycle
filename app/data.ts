@@ -1,4 +1,5 @@
 import { randomId } from "../lib/random-id";
+import { explicitReference } from "../lib/ui-projections";
 
 export type LifecycleType = "onboarding" | "change" | "offboarding";
 export type ItemStatus =
@@ -43,6 +44,9 @@ export type AutomationChange = {
   status: string;
 };
 export type AutomationRun = {
+  plannedActions?: { type: string; target: string }[];
+  targetAccount?: string;
+  alreadyReversedChangeIds?: string[];
   id: string;
   jobId: string;
   operation: "execute" | "rollback" | "reference_check";
@@ -868,7 +872,7 @@ export function parseRows(rows: unknown[][], filename: string): EmployeeRecord {
           id: uid("svc"),
           key: keyOf(label),
           label,
-          category: /notebook|rechner|telefon|handy|kleidung/i.test(label)
+          category: explicitReference(label) ? "Referenz" : /notebook|rechner|telefon|handy|kleidung/i.test(label)
             ? "Gerät"
             : "Anwendung",
           status: "requested",
@@ -877,6 +881,7 @@ export function parseRows(rows: unknown[][], filename: string): EmployeeRecord {
       }
     });
     services.forEach((service) => {
+      if (service.category === "Referenz") return;
       const executionType =
         /konto|mail|zugang|internet|vpn|wie\s+(?:ma\s*:\s*)?/i.test(
           service.label,

@@ -20,6 +20,7 @@ const restoredContainer = `${container}-restored`;
 const volume = `it_lifecycle_${id}`;
 const restoredVolume = `${volume}_restored`;
 const web = "http://127.0.0.1:18080";
+const restoredWeb = "http://127.0.0.1:18083";
 const gatewayUrl = "http://127.0.0.1:18788";
 const token = "isolated-test-token";
 const user = "test-admin", password = "isolated-test-password";
@@ -27,6 +28,8 @@ const basic = `Basic ${Buffer.from(`${user}:${password}`).toString("base64")}`;
 const passed = [];
 let gateway, browser;
 let delayedGateway;
+// Keep the CLI alive while Node 22's unreferenced fetch startup work is pending.
+const keepAlive = setInterval(() => {}, 1000);
 function docker(...args) {
   const response = spawnSync("docker", args, { encoding: "utf8", windowsHide: true });
   if (response.status) throw new Error(`Docker ${args[0]} failed: ${response.stderr}`);
@@ -41,9 +44,10 @@ async function waitFor(check, label, timeout = 120000) {
   while (Date.now() < deadline) { const value = await check(); if (value) return value; await new Promise((r) => setTimeout(r, 300)); }
   throw new Error(`Timed out: ${label}`);
 }
-async function api(route, method = "GET", body, authentication = basic) {
-  const response = await fetch(`${web}${route}`, { method, headers: { "content-type": "application/json", authorization: authentication }, body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(20000) });
+async function api(route, method = "GET", body, authentication = basic, destination = web) {
+  const response = await fetch(`${destination}${route}`, { method, headers: { "content-type": "application/json", authorization: authentication }, body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(20000) });
   const data = await response.json().catch(() => ({}));
+  if (response.status >= 500) console.error(`Isolated API ${route.split("?")[0]} returned ${response.status}: ${data.error || "unstructured response"}`);
   return { status: response.status, data };
 }
 async function runResult(jobId) {
@@ -72,12 +76,13 @@ try {
   docker("volume", "create", volume);
   const overlay = process.env.TEST_SOURCE_OVERLAY === "1" ? ["dist", "drizzle", "public", "scripts"].flatMap((directory) => ["-v", `${path.join(root, directory)}:/app/${directory}:ro`]) : [];
   docker("run", "-d", "--name", container, "-p", "127.0.0.1:18080:8080", "--add-host", "host.docker.internal:host-gateway", "-v", `${volume}:/data`, ...overlay, "-e", "LOCAL_BASIC_AUTH_ENABLED=true", "-e", `APP_USERNAME=${user}`, "-e", `APP_PASSWORD=${password}`, "-e", `MANAGEMENT_AGENT_TOKEN=${token}`, "-e", "MANAGEMENT_AGENT_URL=http://host.docker.internal:18788", "-e", `IT_LIFECYCLE_WEB_URL=${web}`, image);
-  await waitFor(async () => { try { return (await fetch(`${web}/api/health`)).ok; } catch { return false; } }, "isolated Docker web health");
+  await waitFor(async () => { try { return (await fetch(`${web}/api/health`, { signal: AbortSignal.timeout(5000) })).ok; } catch { return false; } }, "isolated Docker web health");
   gateway = startGateway();
-  await waitFor(async () => { try { return (await fetch(`${gatewayUrl}/health`)).ok; } catch { return false; } }, "isolated gateway health");
+  await waitFor(async () => { try { return (await fetch(`${gatewayUrl}/health`, { signal: AbortSignal.timeout(5000) })).ok; } catch { return false; } }, "isolated gateway health");
   assert.equal((await api("/api/employees", "GET", undefined, "")).status, 401);
   assert.equal((await api("/api/gateway/results", "POST", {}, basic)).status, 401);
-  assert.equal((await api("/api/executions", "POST", {})).status, 403);
+  const rejectedReceipt = await api("/api/executions", "POST", {});
+  assert.equal(rejectedReceipt.status, 403, JSON.stringify(rejectedReceipt.data));
   const diagnostics = await api("/api/diagnostics");
   assert.equal(diagnostics.status, 200);
   assert.equal(diagnostics.data.revision, docker("image", "inspect", image, "--format", '{{index .Config.Labels "org.opencontainers.image.revision"}}'));
@@ -137,6 +142,11 @@ try {
   const retry = await runResult(retryId); assert.equal(retry.status, "completed"); assert.equal(retry.actionResults.length, 1);
   assert.equal(state().users.length, 1); assert.equal(state().computers.length, 1); assert.equal(state().tickets.length, 1); assert.equal(state().mutations, beforeRetry + 2);
   const updated = (await people()).find((p) => p.id === person.id);
+  const savedRunProjection = updated.automationRuns.find((run) => run.id === executeId);
+  assert.ok(savedRunProjection.plannedActions.some((action) => action.type === "ProvisionM365Mailbox"));
+  assert.equal(savedRunProjection.targetAccount, "joerg.mueller@kauth.de");
+  assert.ok(!("jobJson" in savedRunProjection));
+  assert.deepEqual(savedRunProjection.alreadyReversedChangeIds, []);
   assert.equal(updated.tasks.find((t) => /E-Mail/.test(t.title)).status, "done");
   passed.push("License shortage single retry provisions mailbox and completes email task without duplicate user/ticket");
   browser = await chromium.launch({ executablePath: "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe", headless: true });
@@ -153,7 +163,7 @@ try {
   await tasksPage.getByText("Keine offenen Vorgänge. Abgeschlossene Akten bleiben unter", { exact: false }).waitFor();
   await tasksPage.goto(web + "/mitarbeiter");
   await tasksPage.getByText("Jörg Müller", { exact: true }).click();
-  for (const tab of ["Ausstattung", "Aufgaben", "Automation", "Historie"]) await tasksPage.getByRole("tab", { name: tab, exact: true }).click();
+  for (const tab of ["Ausstattung & Bestand", "Aufgaben", "Automation", "Historie"]) await tasksPage.getByRole("tab", { name: tab, exact: true }).click();
   await tasksPage.screenshot({ path: path.join(evidence, "employee-desktop.png"), fullPage: true });
   const publicContext = await browser.newContext({ viewport: { width: 390, height: 844 } });
   const publicPage = await publicContext.newPage();
@@ -162,7 +172,7 @@ try {
   assert.ok(await publicPage.getByRole("checkbox").evaluateAll((items) => items.every((item) => item.hasAttribute("disabled") || item.getAttribute("aria-disabled") === "true")));
   passed.push("Internal browser completes manual tasks; finished case leaves open overview, employee tabs and public read-only view remain available");
   const tokenView = await api(`/api/public/status?token=${updated.shareToken}`, "GET", undefined, "");
-  assert.equal(tokenView.status, 200); assert.ok(!JSON.stringify(tokenView.data).includes("personnelNumber"));
+  assert.equal(tokenView.status, 200, JSON.stringify(tokenView.data)); assert.ok(!JSON.stringify(tokenView.data).includes("personnelNumber"));
   assert.equal((await api("/api/public/status", "PATCH", { token: updated.shareToken }, "")).status, 405);
   assert.equal((await api("/api/employees", "PATCH", { employeeId: person.id, shareAction: "revoke" })).status, 200);
   assert.equal((await api(`/api/public/status?token=${updated.shareToken}`, "GET", undefined, "")).status, 404);
@@ -173,8 +183,10 @@ try {
   assert.equal(state().users.length, 1);
   assert.equal(state().mutations, beforeDryRollback);
   assert.notEqual((await people())[0].automationRuns.find((r) => r.id === executeId).status, "rolled_back");
+  assert.deepEqual((await people())[0].automationRuns.find((r) => r.id === executeId).alreadyReversedChangeIds, []);
   const rollback = await api("/api/executions", "PATCH", { runId: executeId, mode: "Execute", executeApproved: true, adCredential: credential });
   assert.equal(rollback.status, 200); assert.equal((await runResult(rollback.data.jobId)).status, "completed"); assert.equal(state().users.length, 0); assert.equal(state().computers.length, 0);
+  assert.ok((await people())[0].automationRuns.find((r) => r.id === executeId).alreadyReversedChangeIds.length > 0);
   passed.push("GUID rollback simulation leaves source intact; Execute reverts supported user change");
   await tasksPage.goto(web);
   await tasksPage.getByRole("button", { name: "Datei einlesen", exact: true }).click();
@@ -222,9 +234,9 @@ try {
   // A restored WAL database may create SQLite lock sidecars during its first read.
   const verification = docker("run", "--rm", "--network", "none", "-v", `${restoredVolume}:/data`, image, "node", "-e", "const fs=require('node:fs'),p=require('node:path'),{DatabaseSync}=require('node:sqlite');function find(d){for(const e of fs.readdirSync(d,{withFileTypes:true})){const q=p.join(d,e.name);if(e.isDirectory()){const r=find(q);if(r)return r;}else if(q.endsWith('.sqlite')&&e.name!=='metadata.sqlite')return q;}}const db=new DatabaseSync(find('/data'),{readOnly:true});console.log(JSON.stringify({check:db.prepare('PRAGMA quick_check').get().quick_check,employees:db.prepare('SELECT count(*) AS n FROM employees').get().n,receipts:db.prepare('SELECT count(*) AS n FROM automation_receipts').get().n}));db.close();");
   const verified = JSON.parse(verification); assert.equal(verified.check, "ok"); assert.equal(verified.employees, 1); assert.ok(verified.receipts >= 5);
-  docker("run", "-d", "--name", restoredContainer, "-p", "127.0.0.1:18081:8080", "-v", `${restoredVolume}:/data`, "-e", "LOCAL_BASIC_AUTH_ENABLED=true", "-e", `APP_USERNAME=${user}`, "-e", `APP_PASSWORD=${password}`, image);
-  await waitFor(async () => { try { return (await fetch("http://127.0.0.1:18081/api/health")).ok; } catch { return false; } }, "restored web health");
-  const restoredResponse = await fetch("http://127.0.0.1:18081/api/employees", { headers: { authorization: basic } });
+  docker("run", "-d", "--name", restoredContainer, "-p", "127.0.0.1:18083:8080", "-v", `${restoredVolume}:/data`, ...overlay, "-e", "LOCAL_BASIC_AUTH_ENABLED=true", "-e", `APP_USERNAME=${user}`, "-e", `APP_PASSWORD=${password}`, image);
+  await waitFor(async () => { try { return (await fetch(`${restoredWeb}/api/health`, { signal: AbortSignal.timeout(5000) })).ok; } catch { return false; } }, "restored web health");
+  const restoredResponse = await fetch(`${restoredWeb}/api/employees`, { headers: { authorization: basic }, signal: AbortSignal.timeout(20000) });
   assert.equal(restoredResponse.status, 200);
   const restoredPeople = (await restoredResponse.json()).employees;
   assert.equal(restoredPeople.length, 1); assert.equal(restoredPeople[0].id, person.id); assert.equal(restoredPeople[0].events.length, 2);
@@ -232,6 +244,29 @@ try {
   const logs = docker("logs", container); assert.ok(!logs.includes(updated.shareToken));
   assert.ok(!logs.includes(token)); assert.ok(!logs.includes(password));
   passed.push("Consistent backup restored in distinct volume; employee/receipts preserved, integrity ok; logs exclude tokens and passwords");
+  const referenceRecord = {
+    id: "ui-reference-api", personnelNumber: "UI-REFERENCE-API", firstName: "Test", lastName: "Referenzakte", company: "Testbetrieb", department: "IT", jobTitle: "Test", status: "pending", directoryReferenceUser: "Test Referenz", directoryReferenceStatus: "pending",
+    services: [
+      { id: "ref-service", key: "reference", label: "Oder wie MA: Test Referenz", category: "Anwendung", status: "requested", source: "synthetic-reference.csv" },
+      { id: "ref-notebook", key: "notebook", label: "Notebook", category: "Gerät", status: "requested", source: "synthetic-reference.csv" },
+    ],
+    tasks: [
+      { id: "ref-task", eventType: "onboarding", title: "Oder wie MA: Test Referenz bereitstellen", owner: "IT", executionType: "simulated", status: "ready" },
+      { id: "ref-device-task", eventType: "onboarding", title: "Notebook bereitstellen", owner: "IT", executionType: "manual", status: "open" },
+    ],
+    events: [{ id: "ref-event", type: "onboarding", status: "in_review", sourceFilename: "synthetic-reference.csv", importedAt: new Date().toISOString() }],
+  };
+  assert.equal((await api("/api/employees", "POST", referenceRecord, basic, restoredWeb)).status, 201);
+  const referencePeople = await api("/api/employees", "GET", undefined, basic, restoredWeb);
+  const preservedReference = referencePeople.data.employees.find((record) => record.personnelNumber === "UI-REFERENCE-API");
+  assert.equal(preservedReference.services.length, 2); assert.equal(preservedReference.tasks.length, 2);
+  const referencePublic = await api(`/api/public/status?token=${preservedReference.shareToken}`, "GET", undefined, "", restoredWeb);
+  assert.equal(referencePublic.status, 200, JSON.stringify(referencePublic.data));
+  assert.equal(referencePublic.data.employee.referenceProfile, true);
+  assert.equal(referencePublic.data.employee.services.length, 1); assert.equal(referencePublic.data.employee.tasks.length, 1);
+  assert.ok(!JSON.stringify(referencePublic.data).includes("Test Referenz"));
+  assert.ok(!JSON.stringify(referencePublic.data).includes("sourceFilename"));
+  passed.push("Real isolated API: legacy reference services/tasks preserved internally, publicly projected as anonymous reference metadata without additional names; no reference job started");
   console.log(JSON.stringify({ status: "passed", passed, container, volume, restoredVolume, evidence }, null, 2));
   writeFileSync(path.join(evidence, "acceptance.json"), JSON.stringify({ status: "passed", passed, image, container, restoredContainer, volume, restoredVolume, verification: verified }, null, 2));
 } catch (error) {
@@ -243,6 +278,7 @@ try {
   writeFileSync(path.join(evidence, "failure.txt"), String(error.stack));
   console.error(`Acceptance failed; evidence ${evidence}`); throw error;
 } finally {
+  clearInterval(keepAlive);
   if (browser) await browser.close();
   await stopGateway();
   if (delayedGateway) { delayedGateway.closeAllConnections(); await new Promise((resolve) => delayedGateway.close(resolve)); }

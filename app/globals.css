@@ -2,6 +2,11 @@
 @import "tw-animate-css";
 @import "../vendor/shadcn-tailwind-4.13.0.css";
 
+button:focus-visible, a:focus-visible, summary:focus-visible {
+  outline: 3px solid #176b87;
+  outline-offset: 3px;
+}
+
 @utility scrollbar-thin {
   scrollbar-width: thin;
 }

@@ -1,0 +1,27 @@
+{
+  "status": "passed",
+  "passed": [
+    "Docker web/gateway healthy; browser cannot forge gateway results",
+    "Real browser: UTF8 HR import, saved employee, mobile navigation and five views without overflow",
+    "WhatIf result durable; no adapter mutation or completed task",
+    "Browser closed + gateway restarted: partial result imported; duplicate idempotent; forged employee rejected; concurrent start/deletion blocked",
+    "License shortage single retry provisions mailbox and completes email task without duplicate user/ticket",
+    "Internal browser completes manual tasks; finished case leaves open overview, employee tabs and public read-only view remain available",
+    "Public token has read-only limited view and revocation",
+    "GUID rollback simulation leaves source intact; Execute reverts supported user change",
+    "Change CSV keeps the same employee/history; default group deactivation retains rule identity; malformed API requests return 400",
+    "A lost dispatch response after authenticated completion cannot overwrite the durable completed state",
+    "Consistent backup restored in distinct volume; employee/receipts preserved, integrity ok; logs exclude tokens and passwords",
+    "Real isolated API: legacy reference services/tasks preserved internally, publicly projected as anonymous reference metadata without additional names; no reference job started"
+  ],
+  "image": "kauth/it-lifecycle:v1-http-46968c8",
+  "container": "it-lifecycle-v1-1791212566681",
+  "restoredContainer": "it-lifecycle-v1-1791212566681-restored",
+  "volume": "it_lifecycle_v1-1791212566681",
+  "restoredVolume": "it_lifecycle_v1-1791212566681_restored",
+  "verification": {
+    "check": "ok",
+    "employees": 1,
+    "receipts": 7
+  }
+}

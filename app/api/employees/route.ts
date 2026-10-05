@@ -48,9 +48,11 @@ export async function GET() {
       events: allEvents.filter((item) => item.employeeId === person.id).map((item) => omitFields(item, "employeeId", "importDigest")),
       auditEntries: allAudits.filter((item) => item.employeeId === person.id).map((item) => omitFields(item, "employeeId")),
       automationRuns: allRuns.filter((item) => item.employeeId === person.id).map((run) => {
+        const savedJob = JSON.parse(run.jobJson);
         const review = run.reviewJson ? JSON.parse(run.reviewJson) : {};
         const actionResults = (run.resultJson ? JSON.parse(run.resultJson).actionResults ?? [] : run.status === "review_required" || run.status === "reviewed" ? (JSON.parse(run.jobJson).actions ?? []).map((action: { type: string }) => ({ action: action.type, status: "review_required" })) : []).map((item: { action: string; status: string; error?: string }) => review[item.action] === "verified_no_effect" ? { ...item, status: "failed", error: "Manuell geprüft: keine externe Wirkung" } : item);
-        return { ...omitFields(run, "employeeId", "jobJson", "resultJson"), actionResults, changes: allChanges.filter((change) => change.runId === run.id).map((change) => omitFields(change, "runId")) };
+        const alreadyReversedChangeIds = allRuns.filter((candidate) => candidate.operation === "rollback" && candidate.mode === "Execute" && candidate.relatedRunId === run.id && candidate.resultJson).flatMap((candidate) => JSON.parse(candidate.resultJson!).changes.filter((change: { status: string }) => change.status === "completed").map((change: { sourceChangeId: string }) => change.sourceChangeId));
+        return { ...omitFields(run, "employeeId", "jobJson", "resultJson"), alreadyReversedChangeIds, plannedActions: (savedJob.actions ?? []).map((action: { type: string; target?: string }) => ({ type: action.type, target: action.target ?? "" })), targetAccount: savedJob.directory?.userPrincipalName ?? savedJob.directory?.samAccountName ?? "", actionResults, changes: allChanges.filter((change) => change.runId === run.id).map((change) => omitFields(change, "runId")) };
       }),
     } as EmployeeRecord, rules)) });
   } catch (error) {

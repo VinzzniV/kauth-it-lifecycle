@@ -1,0 +1,134 @@
+{
+  "date": "2026-10-05",
+  "syntheticOnly": true,
+  "sourceBranch": "implementation/ui-ux-audit",
+  "baseRevision": "46968c8b3c9b5e93b0e8ca48b34d53eb10b59abc",
+  "checks": [
+    {
+      "command": "npm ci --no-audit --no-fund",
+      "status": "passed",
+      "lockPreserved": true
+    },
+    {
+      "command": "npm test",
+      "status": "passed",
+      "tests": 40,
+      "failures": 0
+    },
+    {
+      "command": "npx tsc --noEmit --incremental false",
+      "status": "passed"
+    },
+    {
+      "command": "npm run lint",
+      "status": "passed",
+      "warnings": 0
+    },
+    {
+      "command": "npm run build",
+      "status": "passed",
+      "warnings": [
+        "Existing client chunks larger than 500 kB"
+      ]
+    },
+    {
+      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy RemoteSigned -File tests/powershell/Run-Regression.ps1",
+      "status": "passed",
+      "checks": 20,
+      "testAdapterOnly": true
+    },
+    {
+      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy RemoteSigned -File tests/powershell/Run-GatewayRegression.ps1",
+      "status": "passed",
+      "checks": 11,
+      "testAdapterOnly": true
+    },
+    {
+      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy RemoteSigned -File tests/powershell/Run-OperationsRegression.ps1",
+      "status": "passed",
+      "checks": 4,
+      "noSystemMutation": true
+    },
+    {
+      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy RemoteSigned -File tests/powershell/Run-ConfigurationRegression.ps1",
+      "status": "passed",
+      "checks": 3,
+      "isolatedConfigOnly": true
+    },
+    {
+      "command": "node tests/powershell/Run-NativeModuleRegression.mjs work/whatif-job.json",
+      "status": "passed",
+      "includes": [
+        "native module isolation",
+        "configuration",
+        "saved synthetic server envelope",
+        "agent regression"
+      ],
+      "testAdapterOnly": true
+    },
+    {
+      "command": "TEST_IMAGE=kauth/it-lifecycle:v1-http-46968c8 TEST_SOURCE_OVERLAY=1 node tests/integration/acceptance.mjs",
+      "status": "passed",
+      "evidence": "integration-evidence.json",
+      "checks": 12,
+      "testAdapterOnly": true
+    },
+    {
+      "command": "node tests/ui/verify-browser.mjs",
+      "status": "passed",
+      "evidence": "browser-evidence.json",
+      "viewports": [
+        [
+          1440,
+          900
+        ],
+        [
+          1280,
+          720
+        ],
+        [
+          390,
+          844
+        ]
+      ],
+      "keyboard": true,
+      "mutationRequests": 0
+    }
+  ],
+  "preview": {
+    "url": "http://PK-SRVJOB001:18081",
+    "health": "passed",
+    "containers": [
+      "kauth-ui-ux-preview",
+      "kauth-ui-ux-data"
+    ],
+    "volume": "kauth_ui_ux_preview_data",
+    "network": "kauth-ui-ux-isolated",
+    "runtimeImageId": "sha256:ebd4c7a269417289c5cd8637c1e57d9a8f2ecda62974654fb03ec67396c8e2f1",
+    "compiledServerSha256": "bbc01129d85a53ecb2a4054867c44abad1013275476fc1533eded73c38a80f80",
+    "applicationSourceMountedReadOnly": true,
+    "readOnlySyntheticDataAdapter": true
+  },
+  "sourceSha256": {
+    "app/data.ts": "bf468caeffdd488055b83c52a8d51bc490f66c4121623ad17844ea377e9f631d",
+    "app/lifecycle-app.tsx": "2f5c7baa91be3151deec5b338738a10ce75415cbb9bc95216fc6b9626e5bd4e4",
+    "app/ui-info.tsx": "8fee17fdfbdcb94e247257afd1fdc1ae58e999fc158cb8fcbd0d1b9f1e168ec0",
+    "lib/ui-projections.ts": "65674a9fb870182c9fa0dbf31bb1567eebcd128eee7f70f6d92d2707ffe531af",
+    "app/api/employees/route.ts": "04c85763c541626e76bc3b6b8118c463c026dfdc2dff2749bf85e3f30d0cd347",
+    "app/api/public/status/route.ts": "f6ee02d63765477eea855fcd516eacfde2df502a38f04fc6479e3d688c2003dd",
+    "app/status/[token]/public-status-view.tsx": "1dabeb71b3bf787f1da8027ce593f83635f80a9fcd9c541e8ab4314075d27f5f",
+    "app/globals.css": "1ebcfd16f9aa2f00a2889ad3327999ffcc3ab32eb9ac45ed68a6325817ece5d2",
+    "components/ui/dialog.tsx": "69a7ee81714940c391d6339dd35df3f88b7d2bc02da8e7e7872115a7b619c896",
+    "tests/web/ui-projections.test.ts": "c4e3007a1793b2e410d9b7899de3cfc2020543558524d9a144e5675396f0c60a",
+    "tests/integration/acceptance.mjs": "9ad860d4eab4eb947f62bad0c7e567455486f1d2c26a00f138fa4ea59d95d68b",
+    "tests/ui/verify-browser.mjs": "f77944f6d089c19f3cb58da4e32a86b1bfb9c56b2984d9ab6ece83060b098608"
+  },
+  "preservedInstallation": {
+    "container": "kauth-it-lifecycle",
+    "revision": "46968c8b3c9b5e93b0e8ca48b34d53eb10b59abc",
+    "imageId": "sha256:ebd4c7a269417289c5cd8637c1e57d9a8f2ecda62974654fb03ec67396c8e2f1",
+    "port": 8080,
+    "unchanged": true,
+    "pushPerformed": false
+  }
+}
