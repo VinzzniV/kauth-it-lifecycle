@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param([switch]$Rebuild)
 
 Set-StrictMode -Version Latest
@@ -26,21 +26,24 @@ if (-not (Test-Path -LiteralPath $envPath)) {
         'APP_PORT=8080'
         'APP_USERNAME=itadmin'
         "APP_PASSWORD=$password"
-        'MANAGEMENT_AGENT_URL=http://host.docker.internal:8788'
+        'MANAGEMENT_AGENT_URL=https://host.docker.internal:8788'
+        'IT_LIFECYCLE_WEB_URL=https://localhost'
+        'MANAGEMENT_AGENT_LISTEN_PREFIX=https://+:8788/'
         "MANAGEMENT_AGENT_TOKEN=$token"
         'M365_TENANT_ID='
         'M365_CLIENT_ID='
         'M365_CERT_THUMBPRINT='
         'M365_ORGANIZATION='
     ) | Set-Content -LiteralPath $envPath -Encoding UTF8
-    Write-Host "Lokale Zugangsdaten: itadmin / $password" -ForegroundColor Yellow
-    Write-Host 'Die Daten wurden zusätzlich in .env gespeichert.' -ForegroundColor DarkGray
+    . (Join-Path $PSScriptRoot 'public\agent\Import-ItLifecycleEnv.ps1')
+    Protect-NewItLifecycleConfiguration -Path $envPath
+    Write-Host 'Lokale Zugangsdaten wurden in .env gespeichert. Dateizugriff vor dem Start einschraenken.' -ForegroundColor Yellow
 }
 
 $arguments = @('compose', 'up', '-d')
-if ($Rebuild) { $arguments += '--build' } else { $arguments += @('--build', '--pull', 'missing') }
+if ($Rebuild) { $arguments += '--build' }
 & docker @arguments
 if ($LASTEXITCODE -ne 0) { throw 'Der Docker-Start ist fehlgeschlagen.' }
-Write-Host 'IT Lifecycle V1 läuft unter http://localhost:8080' -ForegroundColor Green
+Write-Host 'Webcontainer gestartet. Fuer den Betrieb die vorbereitete HTTPS-Webadresse verwenden.' -ForegroundColor Green
 Write-Host 'Konfiguration bearbeiten: .\Configure-ItLifecycle.ps1' -ForegroundColor Cyan
 Write-Host 'Agent separat starten: .\public\agent\Start-ItLifecycleGateway.ps1' -ForegroundColor Cyan

@@ -3,24 +3,46 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: kauth/it-lifecycle:v1
-    container_name: kauth-it-lifecycle
+      args:
+        GIT_REVISION: "${GIT_REVISION:-development}"
+    image: "kauth/it-lifecycle:${RELEASE_TAG:-v1}"
+    container_name: "${APP_CONTAINER_NAME:-kauth-it-lifecycle}"
     restart: unless-stopped
     ports:
-      - "${APP_PORT:-8080}:8080"
+      - "${APP_BIND_ADDRESS:-127.0.0.1}:${APP_PORT:-8080}:8080"
     environment:
       PORT: "8080"
       DATA_PATH: /data
       LOCAL_BASIC_AUTH_ENABLED: "true"
       APP_USERNAME: "${APP_USERNAME:?APP_USERNAME fehlt in .env}"
       APP_PASSWORD: "${APP_PASSWORD:?APP_PASSWORD fehlt in .env}"
-      MANAGEMENT_AGENT_URL: "${MANAGEMENT_AGENT_URL:-http://host.docker.internal:8788}"
+      MANAGEMENT_AGENT_URL: "${MANAGEMENT_AGENT_URL:-https://lifecycle-gateway.kauth.local:8788}"
       MANAGEMENT_AGENT_TOKEN: "${MANAGEMENT_AGENT_TOKEN:?MANAGEMENT_AGENT_TOKEN fehlt in .env}"
+      IT_LIFECYCLE_WEB_URL: "${IT_LIFECYCLE_WEB_URL:-https://localhost}"
+      AD_DOMAIN: "${AD_DOMAIN:-kauth.local}"
+      AD_MAIL_DOMAIN: "${AD_MAIL_DOMAIN:-kauth.de}"
+      HELPDESK_BASE_URL: "${HELPDESK_BASE_URL:-http://pk-srvhlpdsk001:8002}"
+      M365_SYNC_SERVER: "${M365_SYNC_SERVER:-PK-SRVMGMT001}"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
       - it_lifecycle_data:/data
 
+  https:
+    profiles: ["https"]
+    image: "${WEB_TLS_IMAGE:-caddy:2-alpine}"
+    restart: unless-stopped
+    ports:
+      - "${WEB_TLS_BIND_ADDRESS:-0.0.0.0}:${WEB_TLS_PORT:-443}:443"
+    environment:
+      WEB_TLS_HOST: "${WEB_TLS_HOST:-localhost}"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - "${WEB_TLS_CERT_DIRECTORY:-./work/tls}:/certs:ro"
+    depends_on:
+      it-lifecycle:
+        condition: service_healthy
+
 volumes:
   it_lifecycle_data:
-    name: kauth_it_lifecycle_data
+    name: "${APP_VOLUME_NAME:-kauth_it_lifecycle_data}"

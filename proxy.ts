@@ -7,8 +7,12 @@ function safeEqual(left: string, right: string) {
   return mismatch === 0;
 }
 
-export function middleware(request: Request) {
+export function proxy(request: Request) {
   const runtime = env as unknown as Record<string, string | undefined>;
+  if (new URL(request.url).pathname === "/api/gateway/results") {
+    if (runtime.MANAGEMENT_AGENT_TOKEN && request.headers.get("authorization") === `Bearer ${runtime.MANAGEMENT_AGENT_TOKEN}`) return;
+    return Response.json({ error: "Nicht autorisiert." }, { status: 401 });
+  }
   if (runtime.LOCAL_BASIC_AUTH_ENABLED !== "true") return;
   const expectedUser = runtime.APP_USERNAME;
   const expectedPassword = runtime.APP_PASSWORD;

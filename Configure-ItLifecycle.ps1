@@ -1,9 +1,10 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
-    [string]$ConfigurationPath = (Join-Path $PSScriptRoot '.env'),
+    [string]$ConfigurationPath = '',
     [switch]$RotateSecrets
 )
 
+if (-not $ConfigurationPath) { $ConfigurationPath = (Join-Path $PSScriptRoot '.env') }
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $loaderPath = Join-Path $PSScriptRoot 'public\agent\Import-ItLifecycleEnv.ps1'
@@ -11,6 +12,7 @@ if (-not (Test-Path -LiteralPath $loaderPath)) { throw "Konfigurationslader fehl
 . $loaderPath
 
 $settings = @{}
+$newConfiguration = -not (Test-Path -LiteralPath $ConfigurationPath)
 if (Test-Path -LiteralPath $ConfigurationPath) {
     $settings = Import-ItLifecycleEnv -Path $ConfigurationPath
 }
@@ -55,7 +57,10 @@ if ($RotateSecrets -or -not $settings.ContainsKey('APP_PASSWORD') -or [string]::
 } else {
     Write-Host 'Vorhandenes Web-Kennwort wird beibehalten.' -ForegroundColor DarkGray
 }
-$settings['MANAGEMENT_AGENT_URL'] = Read-ConfigurationValue 'MANAGEMENT_AGENT_URL' 'Gateway-Adresse fuer Docker' 'http://host.docker.internal:8788'
+$settings['MANAGEMENT_AGENT_URL'] = Read-ConfigurationValue 'MANAGEMENT_AGENT_URL' 'HTTPS-Gateway-Adresse fuer Docker' 'https://host.docker.internal:8788'
+$settings['IT_LIFECYCLE_WEB_URL'] = Read-ConfigurationValue 'IT_LIFECYCLE_WEB_URL' 'HTTPS-Webadresse fuer Gateway-Ergebnisimport' 'https://localhost'
+$settings['MANAGEMENT_AGENT_LISTEN_PREFIX'] = Read-ConfigurationValue 'MANAGEMENT_AGENT_LISTEN_PREFIX' 'HTTPS-Gateway-Listener' 'https://+:8788/'
+$settings['MANAGEMENT_AGENT_QUEUE_PATH'] = Read-ConfigurationValue 'MANAGEMENT_AGENT_QUEUE_PATH' 'Lokale Gateway-Queue' "$env:ProgramData\Kauth\ITLifecycle\Queue"
 if ($RotateSecrets -or -not $settings.ContainsKey('MANAGEMENT_AGENT_TOKEN') -or [string]::IsNullOrWhiteSpace([string]$settings['MANAGEMENT_AGENT_TOKEN']) -or [string]$settings['MANAGEMENT_AGENT_TOKEN'] -like 'BITTE-*') {
     $settings['MANAGEMENT_AGENT_TOKEN'] = New-RandomValue 32
     Write-Host 'Ein neuer zufaelliger Gateway-Token wurde erzeugt.' -ForegroundColor Green
@@ -75,7 +80,7 @@ if ($settings['M365_ORGANIZATION'] -and $settings['M365_ORGANIZATION'] -notmatch
 
 $orderedNames = @(
     'APP_PORT', 'APP_USERNAME', 'APP_PASSWORD',
-    'MANAGEMENT_AGENT_URL', 'MANAGEMENT_AGENT_TOKEN',
+    'MANAGEMENT_AGENT_URL', 'MANAGEMENT_AGENT_TOKEN', 'IT_LIFECYCLE_WEB_URL', 'MANAGEMENT_AGENT_LISTEN_PREFIX', 'MANAGEMENT_AGENT_QUEUE_PATH',
     'M365_TENANT_ID', 'M365_CLIENT_ID', 'M365_CERT_THUMBPRINT', 'M365_ORGANIZATION'
 )
 @(
@@ -83,11 +88,14 @@ $orderedNames = @(
     '# Enthält Geheimnisse: nicht in Git einchecken und Dateizugriff beschraenken.'
     ''
     foreach ($name in $orderedNames) { "$name=$($settings[$name])" }
+    foreach ($name in @($settings.Keys | Sort-Object)) { if ($name -notin $orderedNames) { "$name=$($settings[$name])" } }
 ) | Set-Content -LiteralPath $ConfigurationPath -Encoding UTF8
+if ($newConfiguration) { Protect-NewItLifecycleConfiguration -Path $ConfigurationPath }
 
 Write-Host ''
 Write-Host "Konfiguration gespeichert: $ConfigurationPath" -ForegroundColor Green
-Write-Host 'Start Webanwendung : .\Update-Server.ps1' -ForegroundColor Cyan
+Write-Host 'Start vorbereiten  : .\Manage-ItLifecycle.ps1 -Command Check; Setupplan siehe OPERATIONS.md' -ForegroundColor Cyan
+Write-Host 'Start Web/Gateway  : .\Manage-ItLifecycle.ps1 -Command Start' -ForegroundColor Cyan
 Write-Host 'Start Gateway      : .\public\agent\Start-ItLifecycleGateway.ps1' -ForegroundColor Cyan
 Write-Host 'M365-Verbindungstest: .\public\agent\Test-M365Automation.ps1' -ForegroundColor Cyan
 Write-Host 'Wichtig: Nach jeder Token-Aenderung Docker-Container und ein bereits laufendes Gateway neu starten.' -ForegroundColor Yellow

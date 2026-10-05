@@ -1,6 +1,6 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
-    [string]$ConfigurationPath = (Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) '.env'),
+    [string]$ConfigurationPath = '',
     [string]$TenantId = '',
     [string]$ClientId = '',
     [string]$CertificateThumbprint = '',
@@ -9,6 +9,7 @@ param(
     [switch]$InstallMissingModules
 )
 
+if (-not $ConfigurationPath) { $ConfigurationPath = (Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) '.env') }
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $envLoaderPath = Join-Path $PSScriptRoot 'Import-ItLifecycleEnv.ps1'
@@ -58,7 +59,7 @@ try {
 
     $exchangeHelper = Join-Path $PSScriptRoot 'Invoke-ExchangeMailboxCheck.ps1'
     if (-not (Test-Path -LiteralPath $exchangeHelper)) { throw "Exchange-Testskript fehlt: $exchangeHelper" }
-    $exchangeOutput = & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $exchangeHelper `
+    $exchangeOutput = & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy RemoteSigned -File $exchangeHelper `
         -ClientId $ClientId `
         -CertificateThumbprint $CertificateThumbprint `
         -Organization $Organization `
@@ -66,7 +67,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "Exchange Online: $($exchangeOutput -join ' ')" }
     Write-Host 'Exchange Online: OK' -ForegroundColor Green
 } finally {
-    if ($graphConnected) { Disconnect-MgGraph -ErrorAction SilentlyContinue }
+    if ($graphConnected) { $null = Disconnect-MgGraph -ErrorAction SilentlyContinue }
 }
 
-Write-Host 'Die unbeaufsichtigte Microsoft-365-Anmeldung ist einsatzbereit.' -ForegroundColor Cyan
+Write-Host 'Lesende Anmeldung geprueft; keine Aenderungen ausgefuehrt.' -ForegroundColor Cyan

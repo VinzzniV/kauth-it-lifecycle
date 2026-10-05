@@ -46,3 +46,9 @@ next-env.d.ts
 /.codex/
 /outputs/
 /work/
+*.pfx
+*.p12
+*.key
+*.clixml
+*.cer
+.runtime-wrangler.json

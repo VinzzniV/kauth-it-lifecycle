@@ -12,6 +12,7 @@ export type ServiceItem = {
   details?: string;
 };
 export type TaskItem = {
+  lifecycleEventId?: string | null;
   id: string;
   eventType: LifecycleType;
   title: string;
@@ -51,10 +52,12 @@ export type AutomationRun = {
   completedAt?: string | null;
   error?: string;
   changes: AutomationChange[];
+  actionResults?: { action: string; status: string; error?: string; automationTaskIds?: string[] }[];
+  reviewJson?: string | null;
 };
 
 export function failedAutomationAction(run: AutomationRun) {
-  return run.error?.match(/^Fehler bei '([^']+)'/)?.[1] ?? "";
+  return run.actionResults?.find((item) => item.status === "failed")?.action ?? "";
 }
 export type EmployeeRecord = {
   id: string;
@@ -68,17 +71,23 @@ export type EmployeeRecord = {
   startDate?: string | null;
   endDate?: string | null;
   directoryTargetOu?: string;
+  directoryObjectGuid?: string | null;
+  directorySamAccountName?: string | null;
+  directoryUpn?: string | null;
   directoryReferenceUser?: string;
   directoryReferenceStatus?: string;
   directoryReferenceMessage?: string;
   shareToken?: string;
+  shareExpiresAt?: string | null;
   services: ServiceItem[];
   tasks: TaskItem[];
   events: LifecycleEvent[];
   automationRuns?: AutomationRun[];
+  auditEntries?: { id: number; action: string; detail: string; createdAt: string }[];
 };
 
 export type MasterDataKind =
+  | "location"
   | "group"
   | "application"
   | "task"
@@ -94,6 +103,11 @@ export type MasterDataItem = {
 };
 
 export const defaultMasterData: MasterDataItem[] = [
+  { id: "task-computer-notebook", kind: "task", label: "AD-Notebook anlegen / übernehmen", value: "agent", owner: "IT", active: true },
+  { id: "task-computer-workstation", kind: "task", label: "AD-Workstation anlegen / übernehmen", value: "agent", owner: "IT", active: true },
+  ...[{ name: "Denkingen", code: "PK" }, { name: "Finnentrop", code: "KF" }, { name: "Solingen", code: "MA" }, { name: "Sulzen", code: "SU" }, { name: "Frittlingen", code: "KW" }].map(({ name, code }) => ({ id: `location-${code.toLowerCase()}`, kind: "location" as const, label: name, value: code, owner: "IT", active: true })),
+  { id: "group-pk-all", kind: "group", label: "Denkingen · Alle Benutzer", value: "Denkingen_Alle_Benutzer_GG", owner: "IT", active: true },
+  { id: "group-pk-signature", kind: "group", label: "Denkingen · Signatur", value: "Denkingen_MailSignatur_KauthDenkingen_GG", owner: "IT", active: true },
   {
     id: "group-habel",
     kind: "group",
@@ -292,14 +306,15 @@ export type AutomationJob = {
     endDate?: string | null;
   };
   directory: {
-    domain: "kauth.local";
+    objectGuid?: string | null;
+    domain: string;
     samAccountName: string;
     userPrincipalName: string;
     mail: string;
     description: string;
     title: string;
     targetOu: string;
-    disabledOu: "OU=deaktivierte User,DC=kauth,DC=local";
+    disabledOu: string;
     suggestedGroups: string[];
     referenceUser: {
       displayName: string;
@@ -317,19 +332,21 @@ export type AutomationJob = {
     }>;
   };
   helpdesk: {
-    baseUrl: "http://pk-srvhlpdsk001:8002";
+    baseUrl: string;
     subject: string;
     text: string;
     resource?: string;
   };
   microsoft365: {
-    syncServer: "PK-SRVMGMT001";
+    syncServer: string;
     skuPartNumber: "SPB";
     usageLocation: "DE";
     userSyncTimeoutMinutes: 15;
     mailboxTimeoutMinutes: 15;
   };
   automationTaskIds: string[];
+  actionTaskIds: Record<string, string[]>;
+  actionServiceIds: Record<string, string[]>;
   actions: Array<{ type: string; target: string; requiresApproval: true }>;
 };
 
@@ -482,22 +499,30 @@ export const demoEmployees: EmployeeRecord[] = [
 ];
 
 function clean(value: unknown) {
+  if (value instanceof Date) return `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, "0")}-${String(value.getDate()).padStart(2, "0")}`;
   return String(value ?? "")
     .replace(/\s+/g, " ")
     .trim();
 }
-function isoDate(value: string) {
-  const german = value.match(/(\d{1,2})[.-](\d{1,2})[.-](\d{2,4})/);
+export function isoDate(value: string) {
+  if (!value.trim()) return null;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value.trim())) return validDate(value.trim());
+  const german = value.trim().match(/^(\d{1,2})[.-](\d{1,2})[.-](\d{2}|\d{4})$/);
   if (german) {
     const year = german[3].length === 2 ? `20${german[3]}` : german[3];
-    return `${year}-${german[2].padStart(2, "0")}-${german[1].padStart(2, "0")}`;
+    return validDate(`${year}-${german[2].padStart(2, "0")}-${german[1].padStart(2, "0")}`);
   }
-  const slash = value.match(/(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);
+  const slash = value.trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})$/);
   if (slash) {
     const year = slash[3].length === 2 ? `20${slash[3]}` : slash[3];
-    return `${year}-${slash[1].padStart(2, "0")}-${slash[2].padStart(2, "0")}`;
+    return validDate(`${year}-${slash[2].padStart(2, "0")}-${slash[1].padStart(2, "0")}`);
   }
-  return value.slice(0, 10) || null;
+  return validDate(value.trim());
+}
+function validDate(value: string) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value) || !Number.isFinite(Date.parse(value)) || new Date(value).toISOString().slice(0, 10) !== value)
+    throw new Error(`Ungültiges Datum: ${value}`);
+  return value;
 }
 function keyOf(label: string) {
   return label
@@ -519,30 +544,44 @@ function accountPart(value: string) {
     .replace(/[^a-z0-9.-]/g, "");
 }
 
+export function mergeMasterData(items: MasterDataItem[]): MasterDataItem[] {
+  const merged = new Map(defaultMasterData.map((item) => [item.id, item]));
+  items.forEach((item) => merged.set(item.id, item));
+  return Array.from(merged.values());
+}
+
+export function applyMasterData(person: EmployeeRecord, items: MasterDataItem[]): EmployeeRecord {
+  const rules = mergeMasterData(items);
+  const tasks = person.tasks.map((task) => {
+    if (task.status === "done" || (task.lifecycleEventId && task.lifecycleEventId !== person.events[0]?.id)) return task;
+    const application = rules.find((item) => item.kind === "application" && task.title.toLowerCase().includes(item.label.toLowerCase()));
+    const group = rules.find((item) => item.kind === "group" && task.title.toLowerCase().includes(item.label.toLowerCase().split(/[ ·]/)[0]));
+    const rule = rules.find((item) => item.kind === "task" && item.label.toLowerCase() === task.title.toLowerCase())
+      ?? rules.find((item) => item.kind === "task" && ((item.id === "task-notebook" && /notebook|laptop/i.test(task.title)) || (item.id === "task-account" && /benutzerkonto|konto anlegen/i.test(task.title))));
+    if (!rule) return { ...task, owner: application?.owner ?? task.owner, ...(application?.active === false || group?.active === false ? { executionType: "manual" as const, status: "open" as const } : {}) };
+    return { ...task, owner: rule.owner, executionType: rule.active && rule.value === "agent" ? "simulated" as const : "manual" as const, status: rule.active && rule.value === "agent" ? "ready" as const : "open" as const };
+  });
+  return { ...person, tasks, services: person.services.map((service) => {
+    const rule = rules.find((item) => item.kind === "application" && item.label.toLowerCase() === service.label.toLowerCase());
+    return rule?.active ? { ...service, details: rule.value } : service;
+  }) };
+}
+
 export function buildAutomationJob(
   person: EmployeeRecord,
   computerAssignments: ComputerAssignments = {},
-  options: { portalBaseUrl?: string; helpdeskResource?: string } = {},
+  options: { portalBaseUrl?: string; helpdeskResource?: string; masterData?: MasterDataItem[]; domain?: string; mailDomain?: string; helpdeskBaseUrl?: string; syncServer?: string } = {},
 ): AutomationJob {
+  const rules = mergeMasterData(options.masterData ?? []);
+  person = { ...person, tasks: person.tasks.filter((task) => !task.lifecycleEventId || task.lifecycleEventId === person.events[0]?.id) };
+  person = applyMasterData(person, rules);
   const lifecycleType = person.events[0]?.type ?? "change";
-  const samAccountName = `${accountPart(person.firstName)}.${accountPart(person.lastName)}`;
+  const samAccountName = person.directorySamAccountName || `${accountPart(person.firstName)}.${accountPart(person.lastName)}`;
   const serviceText = person.services
-    .map((service) => service.label.toLowerCase())
+    .map((service) => `${service.label} ${service.details ?? ""}`.toLowerCase())
     .join(" ");
   const suggestedGroups = new Set<string>();
-  if (serviceText.includes("habel")) suggestedGroups.add("Habel-User");
-  if (serviceText.includes("caq")) suggestedGroups.add("CAQ-User");
-  if (serviceText.includes("infor")) suggestedGroups.add("InforLN_UserPRD");
-  if (serviceText.includes("vpn"))
-    suggestedGroups.add("VPNUser_Mitarbeiter_GG");
-  if (serviceText.includes("internet"))
-    suggestedGroups.add("WG_InternetAccess_Restricted_GG");
-  if (
-    `${person.department} ${person.company}`.toLowerCase().includes("denkingen")
-  ) {
-    suggestedGroups.add("Denkingen_Alle_Benutzer_GG");
-    suggestedGroups.add("Denkingen_MailSignatur_KauthDenkingen_GG");
-  }
+  rules.filter((item) => item.kind === "group" && item.active && !rules.some((app) => app.kind === "application" && !app.active && app.label.toLowerCase().includes(item.label.toLowerCase().split(/[ ·]/)[0])) && (serviceText.includes(item.label.toLowerCase().split(/[ ·]/)[0]) || (item.label.includes(" · ") && `${person.department} ${person.company}`.toLowerCase().includes(item.label.split(" · ")[0].toLowerCase())))).forEach((item) => suggestedGroups.add(item.value));
   const referenceName = getReferenceUserName(person);
   const referenceParts = referenceName.split(/\s+/).filter(Boolean);
   const referenceUser = referenceName
@@ -587,7 +626,13 @@ export function buildAutomationJob(
       base: "OU=Clients,OU=_Ressourcen,OU=Frittlingen,DC=kauth,DC=local",
     },
   ];
-  const location = locations.find((item) => locationText.includes(item.token));
+  const configuredLocation = rules.find((item) => item.kind === "location" && item.active && locationText.includes(item.label.toLowerCase()));
+  const location = configuredLocation ? { name: configuredLocation.label, code: configuredLocation.value, token: configuredLocation.label.toLowerCase(), base: locations.find((item) => item.code === configuredLocation.value)?.base ?? "" } : undefined;
+  const computerOu = (type: string) => {
+    if (!location) return "REVIEW_REQUIRED";
+    const matches = rules.filter((item) => item.kind === "ou" && (item.label.toLowerCase() === `${location.name} · ${type}`.toLowerCase() || item.id === `ou-${location.code.toLowerCase()}-${type.toLowerCase()}`));
+    return matches.length === 1 && matches[0].active ? matches[0].value : "REVIEW_REQUIRED";
+  };
   const computerDescription = `${person.department || "Keine Abteilung"} / ${person.firstName} ${person.lastName}`;
   const computers: AutomationJob["directory"]["computers"] = [];
   if (
@@ -601,7 +646,7 @@ export function buildAutomationJob(
         ?.trim()
         .toUpperCase(),
       prefix: location ? `${location.code}-CLNB` : "REVIEW_REQUIRED",
-      targetOu: location ? `OU=Notebook,${location.base}` : "REVIEW_REQUIRED",
+      targetOu: computerOu("Notebook"),
       description: computerDescription,
     });
   if (
@@ -617,20 +662,19 @@ export function buildAutomationJob(
         ?.trim()
         .toUpperCase(),
       prefix: location ? `${location.code}-CLWS` : "REVIEW_REQUIRED",
-      targetOu: location
-        ? `OU=Workstation,${location.base}`
-        : "REVIEW_REQUIRED",
+      targetOu: computerOu("Workstation"),
       description: computerDescription,
     });
   const targetOu =
     lifecycleType === "offboarding"
-      ? "OU=deaktivierte User,DC=kauth,DC=local"
+      ? rules.find((item) => item.id === "ou-disabled" && item.active)?.value || "REVIEW_REQUIRED"
       : person.directoryTargetOu?.trim() ||
         (referenceUser ? "REFERENCE_USER_OU" : "REVIEW_REQUIRED");
   const needsMailbox =
     lifecycleType !== "offboarding" &&
-    person.services.some((service) => /e-?mail|postfach/i.test(service.label));
-  const actions =
+    person.services.some((service) => /e-?mail|postfach/i.test(service.label)) &&
+    rules.some((item) => item.id === "app-mail" && item.active);
+  const plannedActions =
     lifecycleType === "offboarding"
       ? [
           "SnapshotAdAccount",
@@ -640,7 +684,7 @@ export function buildAutomationJob(
           "CreateHelpdeskTicket",
         ]
       : [
-          "CreateAdUser",
+          lifecycleType === "change" ? "UpdateAdUser" : "CreateAdUser",
           ...(referenceUser ? ["CopyGroupsFromReference"] : []),
           ...Array.from(suggestedGroups, (group) => `AddGroup:${group}`),
           ...computers.map(
@@ -650,6 +694,21 @@ export function buildAutomationJob(
           ...(needsMailbox ? ["ProvisionM365Mailbox"] : []),
           "CreateHelpdeskTicket",
         ];
+  const enabledAgentRule = (id: string) => rules.some((item) => item.id === id && item.active && item.value === "agent");
+  const actions = plannedActions.filter((action) => {
+    const explicitlyManual = person.tasks.some((task) => {
+      if (!actionMatches(action, task.title, rules)) return false;
+      // Physical delivery and the separate AD computer operation have independent rules.
+      if (/AdComputer:/.test(action) && !/^AD[- ]|AD-Computer/i.test(task.title)) return false;
+      const rule = rules.find((item) => item.kind === "task" && item.label.toLowerCase() === task.title.toLowerCase());
+      return rule !== undefined && (!rule.active || rule.value !== "agent");
+    });
+    if (explicitlyManual) return false;
+    if (action === "CreateAdUser" || action === "UpdateAdUser") return enabledAgentRule("task-account");
+    if (/AdComputer:Notebook$/.test(action)) return enabledAgentRule("task-computer-notebook");
+    if (/AdComputer:Workstation$/.test(action)) return enabledAgentRule("task-computer-workstation");
+    return true;
+  });
   const subject = `${lifecycleType === "offboarding" ? "Offboarding" : lifecycleType === "onboarding" ? "Onboarding" : "Wechsel"}: ${person.firstName} ${person.lastName}`;
   const completedTasks = person.tasks.filter((task) => task.status === "done").length;
   const taskLines = person.tasks.length
@@ -680,7 +739,7 @@ export function buildAutomationJob(
   return {
     schemaVersion: 1,
     operation: "execute",
-    jobId: `lifecycle-${person.personnelNumber}-${Date.now()}`,
+    jobId: `lifecycle-${crypto.randomUUID()}`,
     createdAt: new Date().toISOString(),
     requestedMode: "WhatIf",
     lifecycleType,
@@ -689,7 +748,7 @@ export function buildAutomationJob(
       personnelNumber: person.personnelNumber,
       firstName: person.firstName,
       lastName: person.lastName,
-      displayName: `${person.firstName} ${person.lastName}`,
+      displayName: `${person.lastName} ${person.firstName}`,
       department: person.department,
       jobTitle: person.jobTitle,
       company: person.company,
@@ -697,26 +756,27 @@ export function buildAutomationJob(
       endDate: person.endDate,
     },
     directory: {
-      domain: "kauth.local",
+      objectGuid: person.directoryObjectGuid,
+      domain: options.domain || "kauth.local",
       samAccountName,
-      userPrincipalName: `${samAccountName}@kauth.de`,
-      mail: `${samAccountName}@kauth.de`,
+      userPrincipalName: person.directoryUpn || `${samAccountName}@${options.mailDomain || "kauth.de"}`,
+      mail: person.directoryUpn || `${samAccountName}@${options.mailDomain || "kauth.de"}`,
       description: person.jobTitle,
       title: person.jobTitle,
       targetOu,
-      disabledOu: "OU=deaktivierte User,DC=kauth,DC=local",
+      disabledOu: rules.find((item) => item.id === "ou-disabled" && item.active)?.value || "REVIEW_REQUIRED",
       suggestedGroups: Array.from(suggestedGroups),
       referenceUser,
       computers,
     },
     helpdesk: {
-      baseUrl: "http://pk-srvhlpdsk001:8002",
+      baseUrl: options.helpdeskBaseUrl || "http://pk-srvhlpdsk001:8002",
       subject,
       text: ticketText,
       resource: options.helpdeskResource?.trim() || undefined,
     },
     microsoft365: {
-      syncServer: "PK-SRVMGMT001",
+      syncServer: options.syncServer || "PK-SRVMGMT001",
       skuPartNumber: "SPB",
       usageLocation: "DE",
       userSyncTimeoutMinutes: 15,
@@ -727,6 +787,8 @@ export function buildAutomationJob(
         (task) => task.executionType === "simulated" && task.status !== "done",
       )
       .map((task) => task.id),
+    actionTaskIds: Object.fromEntries(actions.map((action) => [action, person.tasks.filter((task) => task.executionType === "simulated" && task.status !== "done" && actionMatches(action, task.title, rules)).map((task) => task.id)])),
+    actionServiceIds: Object.fromEntries(actions.map((action) => [action, person.services.filter((service) => actionMatches(action, service.label, rules)).map((service) => service.id)])),
     actions: actions.map((type) => ({
       type,
       target: type.startsWith("AddGroup:")
@@ -740,11 +802,28 @@ export function buildAutomationJob(
             : type === "CopyGroupsFromReference"
               ? (referenceUser?.displayName ?? "Referenzbenutzer")
               : type === "ProvisionM365Mailbox"
-                ? `${samAccountName}@kauth.de · Microsoft 365 Business Premium`
+                ? `${person.directoryUpn || `${samAccountName}@${options.mailDomain || "kauth.de"}`} · Microsoft 365 Business Premium`
               : samAccountName,
       requiresApproval: true,
     })),
   };
+}
+
+function actionMatches(action: string, title: string, rules: MasterDataItem[]) {
+  if (action === "ProvisionM365Mailbox") return /e-?mail|postfach/i.test(title);
+  if (action === "CreateAdUser" || action === "UpdateAdUser") return /benutzerkonto|konto anlegen|konto bereitstellen/i.test(title);
+  if (action === "DisableAdUser") return /benutzerkonto|active directory|ad-benutzer|it-zugänge.*deaktiviert|netzwerkzugang/i.test(title);
+  if (action === "RemoveGroupMemberships") {
+    if (/AD[- ]Gruppen(?:mitgliedschaften)?(?:\s|$)|Active Directory.*Gruppen/i.test(title)) return true;
+    // Only group-mediated access is removed here; an external application account stays manual.
+    if (!/^(?:VPN(?: Mitarbeiter)?|Internetzugang|Internet(?: eingeschränkt)?|AD[- ]Gruppe\s*:.*)$/i.test(title)) return false;
+    return rules.some((item) => item.kind === "group" && (title.toLowerCase().includes(item.label.toLowerCase().split(/[ ·]/)[0]) || title.toLowerCase().includes(item.value.toLowerCase())));
+  }
+  if (/AdComputer:Notebook$/.test(action)) return /notebook|laptop/i.test(title);
+  if (/AdComputer:Workstation$/.test(action)) return /rechner|workstation|desktop/i.test(title);
+  if (action.startsWith("AddGroup:")) return rules.some((item) => item.kind === "group" && item.value === action.slice(9) && title.toLowerCase().includes(item.label.toLowerCase().split(/[ ·]/)[0]));
+  if (action === "CopyGroupsFromReference") return /wie\s+(?:ma\s*:)?/i.test(title);
+    return false;
 }
 
 export function parseRows(rows: unknown[][], filename: string): EmployeeRecord {
@@ -756,7 +835,7 @@ export function parseRows(rows: unknown[][], filename: string): EmployeeRecord {
   const documentTitle =
     normalized
       .find((row) =>
-        row.some((cell) => /laufkarte\s+(eintritt|austritt)/i.test(cell)),
+        row.some((cell) => /laufkarte\s+(eintritt|austritt|wechsel)|wechsel|change/i.test(cell)),
       )
       ?.join(" ")
       .toLowerCase() ?? filename.toLowerCase();
@@ -764,7 +843,7 @@ export function parseRows(rows: unknown[][], filename: string): EmployeeRecord {
     documentTitle,
   )
     ? "offboarding"
-    : "onboarding";
+    : /wechsel|change|versetzung/.test(documentTitle) ? "change" : "onboarding";
   const firstName = lookup("Vorname");
   const lastName = lookup("Name");
   const personnelNumber = lookup("Personal Nummer") || lookup("Personalnummer");
@@ -775,7 +854,7 @@ export function parseRows(rows: unknown[][], filename: string): EmployeeRecord {
   const services: ServiceItem[] = [];
   const tasks: TaskItem[] = [];
 
-  if (type === "onboarding") {
+  if (type !== "offboarding") {
     normalized.forEach((row) => {
       const selected = row[1]?.toUpperCase() === "X";
       const owner = row[0]?.toLowerCase() ?? "";
@@ -824,7 +903,7 @@ export function parseRows(rows: unknown[][], filename: string): EmployeeRecord {
       ) {
         const done = row[6]?.toLowerCase() === "x";
         const executionType =
-          /benutzerkonto|active directory|ad-benutzer|it-zugänge.*deaktiviert|netzwerkzugang/i.test(
+          /benutzerkonto|active directory|ad-benutzer|AD[- ]Gruppen(?:mitgliedschaften)?|it-zugänge.*deaktiviert|netzwerkzugang/i.test(
             row[0],
           ) && /(^|\W)it(\W|$)/i.test(owner)
             ? "simulated"
@@ -855,6 +934,11 @@ export function parseRows(rows: unknown[][], filename: string): EmployeeRecord {
     });
   }
 
+  if (type === "offboarding") {
+    for (const title of ["M365: Sitzungen, Lizenzen und Postfach nach freigegebener Vorgabe manuell bearbeiten", "HelpDesk: Offboarding-Nacharbeit und offene Tickets prüfen"]) {
+      if (!tasks.some((task) => task.title === title)) tasks.push({ id: uid("task"), eventType: type, title, owner: "IT", executionType: "manual", status: "open" });
+    }
+  }
   return {
     id: `emp-${personnelNumber}`,
     personnelNumber,
@@ -913,187 +997,21 @@ export function buildPowerShellPreview(
   preparedJob?: AutomationJob,
 ) {
   const job = preparedJob ?? buildAutomationJob(person);
-  const q = (value: string) => value.replace(/'/g, "''");
-  const ticketText = job.helpdesk.text.replace(/'@/g, "' + '@");
-  const ticketBlock = `
-# i-net-HelpDesk-Ticket erstellen. Im WhatIf-Modus wird nur der Inhalt gezeigt.
-$TicketText = @'
-${ticketText}
-'@
-if ($WhatIfMode) {
-    Write-Host "WHATIF: HelpDesk-Ticket '${q(job.helpdesk.subject)}'"
-    Write-Host $TicketText
-} elseif ($PSCmdlet.ShouldProcess('${q(job.helpdesk.baseUrl)}', 'HelpDesk-Ticket erstellen')) {
-    $TicketFields = @{ subject = '${q(job.helpdesk.subject)}' }
-    $ActionArguments = @{}
-    ${job.helpdesk.resource ? `$TicketFields['Ressource'] = '${q(job.helpdesk.resource)}'\n    $ActionArguments['ticketextension.dispatchNow'] = 'IF_RESOURCE_AVAILABLE'` : "# Keine HelpDesk-Ressource konfiguriert: Ticket bleibt als neue Anfrage sichtbar."}
-    $Body = @{ text = $TicketText; htmlContent = $false; ticketFields = $TicketFields; actionArguments = $ActionArguments } | ConvertTo-Json -Depth 8
-    Invoke-RestMethod -Uri '${q(job.helpdesk.baseUrl)}/api/ticket/create' -Method Post -Credential $HelpDeskCredential -ContentType 'application/json; charset=utf-8' -Body $Body -TimeoutSec 60
-}`;
-
-  if (job.lifecycleType === "offboarding") {
-    return `[CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'High')]
-param([ValidateSet('WhatIf','Execute')][string]$Mode = 'WhatIf')
-
-Set-StrictMode -Version Latest
-$ErrorActionPreference = 'Stop'
-$WhatIfMode = $Mode -eq 'WhatIf'
-Import-Module ActiveDirectory
-$Credential = Get-Credential -Message 'Delegiertes AD-Konto eingeben'
-$HelpDeskCredential = if ($WhatIfMode) { $null } else { Get-Credential -Message 'Normales Windows-Konto mit i-net-HelpDesk-Rechten eingeben' }
-$AdConnection = @{ Server = '${q(job.directory.domain)}'; Credential = $Credential; ErrorAction = 'Stop' }
-$User = Get-ADUser -Identity '${q(job.directory.samAccountName)}' -Properties MemberOf,Enabled,DistinguishedName @AdConnection
-
-# Aktuellen Zustand vor der Änderung sichtbar sichern.
-$User | Select-Object SamAccountName,Enabled,DistinguishedName,MemberOf | ConvertTo-Json -Depth 5
-
-# Direkte Gruppenmitgliedschaften entfernen, Benutzer deaktivieren und verschieben.
-foreach ($GroupDn in @($User.MemberOf)) {
-    Remove-ADGroupMember -Identity $GroupDn -Members $User -Confirm:$false @AdConnection -WhatIf:$WhatIfMode
-}
-Disable-ADAccount -Identity $User @AdConnection -WhatIf:$WhatIfMode
-Move-ADObject -Identity $User.DistinguishedName -TargetPath '${q(job.directory.disabledOu)}' @AdConnection -WhatIf:$WhatIfMode
-${ticketBlock}
-
-Write-Host 'Offboarding-Skript abgeschlossen.'`;
-  }
-  const groupLines = job.directory.suggestedGroups
-    .map(
-      (group) =>
-        `Add-ADGroupMember -Identity '${q(group)}' -Members $SamAccountName @AdConnection -WhatIf:$WhatIfMode`,
-    )
-    .join("\n");
-  const referenceLookup = job.directory.referenceUser
-    ? `
-# Referenzbenutzer zuerst exakt und danach über Nachname/Initiale auflösen.
-$ReferenceQuery = '${q(job.directory.referenceUser.query)}'
-$ReferenceUsers = @(Get-ADUser -Filter "SamAccountName -eq '$ReferenceQuery' -or UserPrincipalName -eq '$ReferenceQuery' -or DisplayName -eq '$ReferenceQuery'" -Properties MemberOf,DistinguishedName @AdConnection)
-if ($ReferenceUsers.Count -eq 0) {
-    $ReferenceUsers = @(Get-ADUser -Filter "Surname -eq '${q(job.directory.referenceUser.surname)}' -and GivenName -like '${q(job.directory.referenceUser.givenNameInitial)}*'" -Properties MemberOf,DistinguishedName @AdConnection)
-}
-if ($ReferenceUsers.Count -ne 1) { throw "Referenzbenutzer ist nicht eindeutig. Treffer: $($ReferenceUsers.Count)" }
-$ReferenceUser = $ReferenceUsers[0]
-$TargetOu = $ReferenceUser.DistinguishedName -replace '^CN=(?:\\.|[^,])+,', ''`
-    : `
-$ReferenceUser = $null
-$TargetOu = '${q(job.directory.targetOu)}'`;
-  const referenceLines = job.directory.referenceUser
-    ? `
-# Alle direkten AD-Gruppen des Referenzbenutzers kopieren.
-foreach ($GroupDn in @($ReferenceUser.MemberOf)) {
-    Add-ADGroupMember -Identity $GroupDn -Members $SamAccountName @AdConnection -WhatIf:$WhatIfMode
-}`
-    : "# Kein Referenzbenutzer angegeben.";
-  const computerLines = job.directory.computers
-    .map((computer) =>
-      computer.mode === "existing"
-        ? `
-# Vorhandenen Rechner uebernehmen: Nur die Beschreibung wird geaendert.
-$ExistingComputer = Get-ADComputer -Identity '${q(computer.existingName ?? "COMPUTERNAME_REQUIRED")}' -Properties Description @AdConnection
-Set-ADComputer -Identity $ExistingComputer -Description '${q(computer.description)}' @AdConnection -WhatIf:$WhatIfMode`
-        : `
-New-NextAdComputer -Prefix '${q(computer.prefix)}' -TargetOu '${q(computer.targetOu)}' -Description '${q(computer.description)}' -ManagedBy $(if ($User) { $User.DistinguishedName } else { $null })`,
-    )
-    .join("\n");
-  const m365Block = job.actions.some((action) => action.type === "ProvisionM365Mailbox")
-    ? `
-# Hybrides Microsoft-365-Postfach bereitstellen. App-ID und Zertifikat liegen nur auf dem Jobserver.
-if ($WhatIfMode) {
-    Write-Host "WHATIF: Delta-Sync auf ${q(job.microsoft365.syncServer)}, Lizenz ${q(job.microsoft365.skuPartNumber)} und Exchange-Online-Postfach für ${q(job.directory.userPrincipalName)}"
-} else {
-    foreach ($VariableName in 'M365_TENANT_ID','M365_CLIENT_ID','M365_CERT_THUMBPRINT','M365_ORGANIZATION') {
-        if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($VariableName))) { throw "Jobserver-Konfiguration fehlt: $VariableName" }
-    }
-    Import-Module Microsoft.Graph.Authentication -ErrorAction Stop
-    Import-Module Microsoft.Graph.Users -ErrorAction Stop
-    Import-Module Microsoft.Graph.Users.Actions -ErrorAction Stop
-    Import-Module Microsoft.Graph.Identity.DirectoryManagement -ErrorAction Stop
-    Import-Module ExchangeOnlineManagement -ErrorAction Stop
-    Connect-MgGraph -TenantId $env:M365_TENANT_ID -ClientId $env:M365_CLIENT_ID -CertificateThumbprint $env:M365_CERT_THUMBPRINT -NoWelcome
-    Connect-ExchangeOnline -AppId $env:M365_CLIENT_ID -CertificateThumbprint $env:M365_CERT_THUMBPRINT -Organization $env:M365_ORGANIZATION -ShowBanner:$false -CommandName Get-EXOMailbox
-    try {
-        Invoke-Command -ComputerName '${q(job.microsoft365.syncServer)}' -Credential $Credential -ScriptBlock {
-            Import-Module ADSync -ErrorAction Stop
-            Start-ADSyncSyncCycle -PolicyType Delta -InteractiveMode $false
-        }
-        $Deadline = (Get-Date).AddMinutes(${job.microsoft365.userSyncTimeoutMinutes})
-        do {
-            $CloudUser = Get-MgUser -UserId '${q(job.directory.userPrincipalName)}' -Property Id,UserPrincipalName,UsageLocation,AssignedLicenses -ErrorAction SilentlyContinue
-            if (-not $CloudUser) { Start-Sleep -Seconds 15 }
-        } until ($CloudUser -or (Get-Date) -ge $Deadline)
-        if (-not $CloudUser) { throw 'Der Benutzer wurde innerhalb des Zeitlimits nicht nach Entra ID synchronisiert.' }
-        if (-not $CloudUser.UsageLocation) { Update-MgUser -UserId $CloudUser.Id -UsageLocation '${q(job.microsoft365.usageLocation)}' }
-        $Sku = Get-MgSubscribedSku -All | Where-Object SkuPartNumber -eq '${q(job.microsoft365.skuPartNumber)}' | Select-Object -First 1
-        if (-not $Sku) { throw 'Microsoft 365 Business Premium (SPB) wurde im Mandanten nicht gefunden.' }
-        if ($CloudUser.AssignedLicenses.SkuId -notcontains $Sku.SkuId) {
-            $FreeLicenses = [int]$Sku.PrepaidUnits.Enabled - [int]$Sku.PrepaidUnits.Warning - [int]$Sku.ConsumedUnits
-            if ($FreeLicenses -lt 1) { throw 'Keine freie Microsoft 365 Business Premium Lizenz. Erst Lizenz bereinigen, dann diese Aktion erneut starten.' }
-            Set-MgUserLicense -UserId $CloudUser.Id -AddLicenses @(@{ SkuId = $Sku.SkuId }) -RemoveLicenses @()
-        }
-        $MailboxDeadline = (Get-Date).AddMinutes(${job.microsoft365.mailboxTimeoutMinutes})
-        do {
-            $Mailbox = Get-EXOMailbox -Identity '${q(job.directory.userPrincipalName)}' -ErrorAction SilentlyContinue
-            if (-not $Mailbox) { Start-Sleep -Seconds 20 }
-        } until ($Mailbox -or (Get-Date) -ge $MailboxDeadline)
-        if (-not $Mailbox) { throw 'Die Lizenz ist zugewiesen, aber das Exchange-Online-Postfach ist noch nicht sichtbar. Aktion später erneut prüfen.' }
-    } finally {
-        Disconnect-ExchangeOnline -Confirm:$false -ErrorAction SilentlyContinue
-        Disconnect-MgGraph -ErrorAction SilentlyContinue
-    }
-}`
-    : "# Kein Microsoft-365-Postfach angefordert.";
-  return `[CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'High')]
-param([ValidateSet('WhatIf','Execute')][string]$Mode = 'WhatIf')
-
-Set-StrictMode -Version Latest
-$ErrorActionPreference = 'Stop'
-$WhatIfMode = $Mode -eq 'WhatIf'
-Import-Module ActiveDirectory
-
-# Zugangsdaten werden nur auf PK-SRVMGMT002 abgefragt und nicht gespeichert.
-$Credential = Get-Credential -Message 'Delegiertes AD-Konto eingeben'
-$HelpDeskCredential = if ($WhatIfMode) { $null } else { Get-Credential -Message 'Normales Windows-Konto mit i-net-HelpDesk-Rechten eingeben' }
-$InitialPassword = Read-Host -AsSecureString 'Initiales Kennwort fuer den neuen Mitarbeiter eingeben'
-$AdConnection = @{ Server = '${q(job.directory.domain)}'; Credential = $Credential; ErrorAction = 'Stop' }
-$SamAccountName = '${q(job.directory.samAccountName)}'
-
-function New-NextAdComputer {
-    param([string]$Prefix, [string]$TargetOu, [string]$Description, [AllowNull()][string]$ManagedBy)
-    if ($Prefix -eq 'REVIEW_REQUIRED' -or $TargetOu -eq 'REVIEW_REQUIRED') { throw 'Standort oder Computer-OU muss geprüft werden.' }
-    $Numbers = Get-ADComputer -Filter "Name -like '$Prefix*'" @AdConnection | ForEach-Object {
-        if ($_.Name -match '^' + [regex]::Escape($Prefix) + '(\\d+)$') { [int]$Matches[1] }
-    }
-    $NextNumber = if ($Numbers) { ($Numbers | Measure-Object -Maximum).Maximum + 1 } else { 1 }
-    do {
-        $ComputerName = $Prefix + $NextNumber.ToString('000')
-        $Exists = Get-ADComputer -Filter "Name -eq '$ComputerName'" @AdConnection
-        if ($Exists) { $NextNumber++ }
-    } while ($Exists)
-    $ComputerArgs = @{ Name = $ComputerName; SamAccountName = ($ComputerName + '$'); Path = $TargetOu; Description = $Description; Enabled = $true }
-    if ($ManagedBy) { $ComputerArgs.ManagedBy = $ManagedBy }
-    New-ADComputer @ComputerArgs @AdConnection -WhatIf:$WhatIfMode
-}
-
-${referenceLookup}
-
-# Benutzer mit Stellenbezeichnung in Beschreibung und Position anlegen.
-$User = Get-ADUser -Filter "SamAccountName -eq '$SamAccountName'" @AdConnection
-if ($User) { throw "AD-Benutzer '$SamAccountName' existiert bereits. Der Lauf wurde vor weiteren Aenderungen gestoppt." }
-if (-not $User) {
-    New-ADUser -Name '${q(`${job.person.lastName}, ${job.person.firstName}`)}' -GivenName '${q(job.person.firstName)}' -Surname '${q(job.person.lastName)}' -DisplayName '${q(`${job.person.lastName}, ${job.person.firstName}`)}' -SamAccountName $SamAccountName -UserPrincipalName '${q(job.directory.userPrincipalName)}' -EmailAddress '${q(job.directory.mail)}' -EmployeeNumber '${q(job.person.personnelNumber)}' -Department '${q(job.person.department)}' -Company '${q(job.person.company)}' -Description '${q(job.directory.description)}' -Title '${q(job.directory.title)}' -Path $TargetOu -AccountPassword $InitialPassword -ChangePasswordAtLogon $true -Enabled $true @AdConnection -WhatIf:$WhatIfMode
-    if (-not $WhatIfMode) { $User = Get-ADUser -Identity $SamAccountName @AdConnection }
-}
-${referenceLines}
-
-# Zusätzlich aus der Laufkarte abgeleitete Gruppen sicherstellen.
-${groupLines || "# Keine zusätzlichen Gruppen abgeleitet."}
-
-# Computerobjekt neu anlegen oder einen vorhandenen Rechner uebernehmen.
-${computerLines || "# Kein Notebook und keine Workstation angefordert."}
-
-${m365Block}
-
-${ticketBlock}
-
-Write-Host 'Onboarding-Skript abgeschlossen. Im Execute-Modus wird jede Änderung bestätigt.'`;
+  const lines = [
+    "IT Lifecycle · Auftragsvorschau",
+    `Vorgang: ${job.lifecycleType} · ${job.person.displayName}`,
+    `Anmeldename: ${job.directory.samAccountName}`,
+    `UPN: ${job.directory.userPrincipalName}`,
+    `Ziel-OU: ${job.directory.targetOu}`,
+    "",
+    "Geplante Aktionen:",
+    ...job.actions.map((action, index) => `${index + 1}. ${action.type}: ${action.target}`),
+    "",
+    "Testlauf oder Ausführung über die internen Schaltflächen starten.",
+    "Die Ausführung benötigt eine ausdrückliche Freigabe und wird vom Windows-Gateway übernommen.",
+    "Der Server speichert Auftrag und Ergebnis dauerhaft; das Browserfenster kann geschlossen werden.",
+    "Fehlgeschlagene Einzelaktionen und unterstützte Rücknahmen werden in der Akte bearbeitet.",
+    "Diese Vorschau enthält keine ausführbaren Befehle und keine Zugangsdaten.",
+  ];
+  return lines.join("\n");
 }

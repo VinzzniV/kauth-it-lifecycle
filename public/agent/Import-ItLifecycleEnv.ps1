@@ -1,3 +1,6 @@
+﻿# Operational entrypoints also need their own built-in modules when launched by Node/PowerShell 7.
+$env:PSModulePath = [IO.Path]::Combine($PSHOME, 'Modules') + [IO.Path]::PathSeparator + $env:PSModulePath
+
 function Import-ItLifecycleEnv {
     [CmdletBinding()]
     param(
@@ -23,4 +26,13 @@ function Import-ItLifecycleEnv {
         [Environment]::SetEnvironmentVariable($name, $value, 'Process')
     }
     return $settings
+}
+
+function Protect-NewItLifecycleConfiguration {
+    param([Parameter(Mandatory=$true)][string]$Path)
+    $acl = New-Object Security.AccessControl.FileSecurity
+    $acl.SetAccessRuleProtection($true, $false)
+    $identities = @([Security.Principal.WindowsIdentity]::GetCurrent().User, (New-Object Security.Principal.SecurityIdentifier('S-1-5-18')), (New-Object Security.Principal.SecurityIdentifier('S-1-5-32-544')))
+    foreach ($identity in $identities) { $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($identity, 'FullControl', 'Allow'))) }
+    Set-Acl -LiteralPath $Path -AclObject $acl
 }

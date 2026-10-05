@@ -1,50 +1,27 @@
-# IT Lifecycle V1 lokal unter Windows
+# Setup unter Windows
 
-## Voraussetzungen
+## Entwicklungsumgebung
 
-- Windows 10/11 oder Windows Server mit Docker Desktop beziehungsweise Docker Engine für Linux-Container
-- Für die AD-Automation: Windows PowerShell 5.1, RSAT Active Directory und Netzwerkzugriff auf `kauth.local`
+Git, Node.js 22.16 oder neuer und Docker für Linux-Container installieren. Vorhandene kompatible Werkzeuge erhalten. Windows PowerShell 5.1 ist für Agent-Laufzeittests erforderlich; AD/Graph/Exchange werden in Tests durch lokale Adapter ersetzt.
 
-## Schnellstart
+```powershell
+npm ci
+npm run dev
+npm test
+npm run build
+powershell.exe -NoProfile -NonInteractive -ExecutionPolicy RemoteSigned -File tests/powershell/Run-Regression.ps1
+powershell.exe -NoProfile -NonInteractive -ExecutionPolicy RemoteSigned -File tests/powershell/Run-GatewayRegression.ps1
+powershell.exe -NoProfile -NonInteractive -ExecutionPolicy RemoteSigned -File tests/powershell/Run-ConfigurationRegression.ps1
+```
 
-1. Docker Desktop starten.
-2. PowerShell im Projektordner öffnen.
-3. Einmalig `.\Configure-ItLifecycle.ps1` ausführen. Der Assistent zeigt dabei, wo die Entra-, Zertifikat- und Exchange-Werte zu finden sind.
-4. `PowerShell -ExecutionPolicy Bypass -File .\Start-Local.ps1` ausführen.
-5. `http://localhost:8080` öffnen.
+`npm run dev` nutzt Port 5173. Für die vollständige isolierte Kette zuerst `docker build --build-arg GIT_REVISION=development -t kauth/it-lifecycle:v1-candidate .` erfolgreich abschliessen, dann `node --import tsx tests/integration/acceptance.mjs` ausführen. Der Test verwendet ausschließlich synthetische Daten, eigene Tokens, Ports 18080/18081/18788 und eigene Docker-Volumes; Ergebnisse bleiben unter `work/` erhalten. Produktive `.env`, Queue und Volume niemals in Tests einbinden.
 
-Die Datenbank liegt in einem Docker-Volume und bleibt bei Neustarts oder Image-Updates erhalten.
+## Produktionskonfiguration vorbereiten
 
-## AD-Agent für lokale Tests
+1. `.\Configure-ItLifecycle.ps1` erstellt bzw. ergänzt die zentrale lokale `.env`, ohne bestehende Geheimnisse zu rotieren. `.env.example` beschreibt die Schlüssel.
+2. Vertrauenswürdige HTTPS-Adressen für Web und Gateway, Zertifikate und eine delegierte Gatewayidentität festlegen. Der Container muss dem Gatewayzertifikat vertrauen und dessen DNS/SAN prüfen können. Keine Zertifikatsprüfung abschalten.
+3. `.\Manage-ItLifecycle.ps1 -Command Check` prüft die Struktur; `-Command Setup` mit Identität, HTTPS-Thumbprint und ausdrücklich begrenzten Quelladressen zeigt den Systemänderungsplan.
+4. Systemsetup erst nach Freigabe mit `-ApplySetup` aktivieren. Keine allgemeinen URL-Reservierungen für „Jeder“ verwenden. RDP/WinRM erhalten.
+5. Web-HTTPS als optionales Compose-Profil vorbereiten: geschützte `web.crt`/`web.key` außerhalb des Buildkontexts, `WEB_TLS_HOST`/`WEB_TLS_CERT_DIRECTORY` in `.env`; `docker compose --profile https config --quiet` validiert die Konfiguration.
 
-1. PowerShell als Administrator öffnen.
-2. Falls nötig einmalig die URL reservieren: `netsh http add urlacl url=http://+:8788/ user=Jeder`.
-3. `PowerShell -ExecutionPolicy RemoteSigned -File .\public\agent\Start-ItLifecycleGateway.ps1` starten.
-4. Das Fenster geöffnet lassen. Token und M365-Werte werden automatisch aus der zentralen `.env` gelesen.
-
-Vor Referenzprüfung, WhatIf, Ausführung und Rollback fragt die Weboberfläche nach den AD-Zugangsdaten. Der Gateway wandelt sie sofort in eine mit Windows DPAPI geschützte, temporäre Credential-Datei um. Der Agent liest und löscht diese Datei beim Start; Zugangsdaten werden weder in der Jobdatei noch in Datenbank oder Ergebnis gespeichert. Ohne mitgelieferte Zugangsdaten bleibt die lokale PowerShell-Abfrage als Rückfall erhalten.
-
-Da die Zugangsdaten vom Browser an den Server übertragen werden, muss die Anwendung außerhalb einer isolierten Testumgebung über HTTPS bereitgestellt werden. Für den Regelbetrieb sollte ein delegiertes AD-Konto statt Domain Admin verwendet werden.
-
-## Entwicklung ohne Docker-Neubau
-
-1. Node.js 22 installieren.
-2. `npm ci` ausführen.
-3. `npm run build` ausführen.
-4. Die Migrationen aus `drizzle/` auf die lokale D1-Datenbank anwenden.
-5. `npm run dev` starten und die angezeigte lokale Adresse öffnen.
-
-Für einen sauberen Integrationstest empfiehlt sich `Start-Local.ps1`, weil dort dieselbe Laufzeit wie auf der Windows-VM verwendet wird.
-
-## Betrieb und Update
-
-- Status: `docker compose ps`
-- Protokoll: `docker compose logs -f it-lifecycle`
-- Neustart: `docker compose restart`
-- Update aus GitHub: `PowerShell -ExecutionPolicy Bypass -File .\Update-Server.ps1`
-- Update ohne Git: `docker compose up -d --build`
-- Sicherung: Docker-Volume `kauth_it_lifecycle_data` sichern.
-
-`.env` enthält lokale Geheimnisse und darf nicht ins Git-Repository übernommen werden.
-
-Wenn der Windows-Agent auf demselben Server läuft, müssen nach einem Update auch die aktuellen Dateien aus `public\agent` verwendet werden. Ein bereits geöffnetes Gateway-Fenster anschließend schließen und mit `Start-ItLifecycleGateway.ps1` neu starten.
+Direktes Web-HTTP bindet standardmäßig nur an Loopback. Testmodus wird ausschließlich in isolierten Testkonfigurationen gesetzt. Die komplette Start-/Status-/Stop-/Update-/Backup-/Restorefolge steht in [OPERATIONS.md](OPERATIONS.md).

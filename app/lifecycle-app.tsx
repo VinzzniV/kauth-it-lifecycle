@@ -1,7 +1,7 @@
 "use client";
 
 import { type FormEvent, useEffect, useRef, useState } from "react";
-import { read, utils } from "xlsx";
+import { readHrRows } from "@/lib/hr-import";
 import {
   Activity,
   Bot,
@@ -53,6 +53,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Table,
@@ -129,9 +130,12 @@ const statusText: Record<string, string> = {
   queued: "Wartet",
   partial: "Teilweise",
   failed: "Fehlgeschlagen",
+  review_required: "Prüfung erforderlich",
+  reviewed: "Manuell geprüft",
   rolled_back: "Zurückgenommen",
 };
 const executionActionText: Record<string, string> = {
+  UpdateAdUser: "Benutzerkonto aktualisieren",
   CreateAdUser: "AD-Benutzer anlegen",
   CopyGroupsFromReference: "Gruppen des Referenzbenutzers kopieren",
   SnapshotAdAccount: "AD-Konto erfassen",
@@ -155,6 +159,7 @@ function executionActionLabel(action: string) {
   return executionActionText[action] ?? action;
 }
 const kindText: Record<MasterDataKind, string> = {
+  location: "Standorte",
   group: "Gruppen",
   application: "Anwendungen",
   task: "Aufgaben",
@@ -168,6 +173,7 @@ function automationOptions(items: MasterDataItem[]) {
   return {
     portalBaseUrl: typeof window === "undefined" ? "" : window.location.origin,
     helpdeskResource: helpdeskResource?.value,
+    masterData: items,
   };
 }
 function badgeClass(status: string) {
@@ -206,6 +212,9 @@ function downloadJob(job: ReturnType<typeof buildAutomationJob>) {
     "application/json",
   );
 }
+function apiFetch(input: RequestInfo | URL, init: RequestInit = {}) {
+  return fetch(input, { ...init, signal: init.signal ?? AbortSignal.timeout(20000) });
+}
 async function collectExecutionResult(
   jobId: string,
   onComplete: () => void,
@@ -214,7 +223,7 @@ async function collectExecutionResult(
   onLiveProgress?: (progress: RunningExecutionProgress) => void,
 ) {
   for (let attempt = 0; attempt < 150; attempt += 1) {
-    const response = await fetch(
+    const response = await apiFetch(
       `/api/agent?jobId=${encodeURIComponent(jobId)}`,
     );
     if (response.status === 202) {
@@ -235,12 +244,7 @@ async function collectExecutionResult(
     if (response.ok) {
       const result = (await response.json()) as ImmediateExecutionResult;
       onResult?.({ ...result, changes: result.changes ?? [] });
-      const stored = await fetch("/api/executions", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(result),
-      });
-      if (stored.ok) {
+      {
         onComplete();
         if (result.status === "failed")
           return `Ausführung fehlgeschlagen und wurde protokolliert: ${result.error || "Unbekannter Fehler"}`;
@@ -250,10 +254,6 @@ async function collectExecutionResult(
           return "Referenzprüfung wurde in der Mitarbeiterakte gespeichert.";
         return `Ergebnis mit ${result.changes?.length ?? 0} protokollierten Änderung(en) wurde in der Mitarbeiterakte gespeichert.`;
       }
-      const storageError = (await stored
-        .json()
-        .catch(() => ({}))) as ApiMessage;
-      return `Ergebnis liegt vor, konnte aber nicht gespeichert werden: ${storageError.error ?? `HTTP ${stored.status}`}`;
     }
     const pollError = (await response.json().catch(() => ({}))) as ApiMessage;
     return (
@@ -281,7 +281,7 @@ export function LifecycleApp({ view = "overview" }: { view?: AppView }) {
   const recoveringJobs = useRef(new Set<string>());
 
   async function refreshEmployees() {
-    const response = await fetch("/api/employees");
+    const response = await apiFetch("/api/employees");
     const data = (await response
       .json()
       .catch(() => ({}))) as EmployeeListResponse;
@@ -310,21 +310,21 @@ export function LifecycleApp({ view = "overview" }: { view?: AppView }) {
     });
   }, []);
   useEffect(() => {
-    fetch("/api/master-data")
-      .then(async (r) =>
-        r.ok ? ((await r.json()) as { items?: MasterDataItem[] }) : null,
-      )
+    apiFetch("/api/master-data")
+      .then(async (r) => {
+        const data = await r.json().catch(() => ({})) as { items?: MasterDataItem[]; error?: string };
+        if (!r.ok || !data.items) throw new Error(data.error || "Stammdaten konnten nicht geladen werden. Bitte die Seite erneut laden.");
+        return data;
+      })
       .then((data) => {
         if (!data?.items) return;
         const merged = new Map(
           defaultMasterData.map((item) => [item.id, item]),
         );
         data.items.forEach((item) => merged.set(item.id, item));
-        setMasterData(
-          Array.from(merged.values()).filter((item) => item.active),
-        );
+        setMasterData(Array.from(merged.values()));
       })
-      .catch(() => undefined);
+      .catch((error) => setAppError(error instanceof Error ? error.message : "Stammdaten konnten nicht geladen werden."));
   }, []);
   useEffect(() => {
     const context = (
@@ -399,23 +399,7 @@ export function LifecycleApp({ view = "overview" }: { view?: AppView }) {
       return;
     }
     try {
-      let rows: unknown[][];
-      if (file.name.toLowerCase().endsWith(".csv")) {
-        const text = new TextDecoder("windows-1252").decode(
-          await file.arrayBuffer(),
-        );
-        rows = text.split(/\r?\n/).map((line) => line.split(";"));
-      } else {
-        const workbook = read(await file.arrayBuffer(), {
-          type: "array",
-          cellDates: true,
-        });
-        rows = utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]], {
-          header: 1,
-          raw: false,
-          defval: "",
-        }) as unknown[][];
-      }
+      const rows = readHrRows(await file.arrayBuffer(), file.name);
       setDraft(parseRows(rows, file.name));
     } catch (error) {
       setImportError(
@@ -429,7 +413,7 @@ export function LifecycleApp({ view = "overview" }: { view?: AppView }) {
     if (!draft) return;
     setSaving(true);
     try {
-      const response = await fetch("/api/employees", {
+      const response = await apiFetch("/api/employees", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(draft),
@@ -459,7 +443,7 @@ export function LifecycleApp({ view = "overview" }: { view?: AppView }) {
     task: TaskItem,
     status: TaskItem["status"],
   ) {
-    const response = await fetch("/api/employees", {
+    const response = await apiFetch("/api/employees", {
       method: "PATCH",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -476,7 +460,7 @@ export function LifecycleApp({ view = "overview" }: { view?: AppView }) {
     await refreshEmployees();
   }
   async function deleteEmployee(person: EmployeeRecord) {
-    const response = await fetch("/api/employees", {
+    const response = await apiFetch("/api/employees", {
       method: "DELETE",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ employeeId: person.id }),
@@ -486,37 +470,31 @@ export function LifecycleApp({ view = "overview" }: { view?: AppView }) {
     setDetailOpen(false);
     setActiveId(employees.find((item) => item.id !== person.id)?.id ?? "");
   }
-  async function saveMasterItem(item: MasterDataItem) {
-    const response = await fetch("/api/master-data", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(item),
-    });
-    if (!response.ok) {
-      setAppError("Das Stammdatum konnte nicht gespeichert werden.");
-      return;
-    }
-    setMasterData((items) =>
-      items.filter((entry) => entry.id !== item.id).concat(item),
-    );
+  async function saveMasterItem(item: MasterDataItem): Promise<boolean> {
+    try {
+      const response = await apiFetch("/api/master-data", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(item) });
+      const data = await response.json().catch(() => ({})) as ApiMessage;
+      if (!response.ok) throw new Error(data.error || "Das Stammdatum konnte nicht gespeichert werden.");
+      setMasterData((items) => items.filter((entry) => entry.id !== item.id).concat(item));
+      setAppError(""); await refreshEmployees(); return true;
+    } catch (error) { setAppError(error instanceof Error ? error.message : "Server nicht erreichbar. Der Entwurf bleibt erhalten."); return false; }
   }
-  async function deleteMasterItem(id: string) {
-    const response = await fetch("/api/master-data", {
-      method: "DELETE",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ id }),
-    });
-    if (!response.ok) {
-      setAppError("Das Stammdatum konnte nicht entfernt werden.");
-      return;
-    }
-    setMasterData((items) => items.filter((item) => item.id !== id));
+  async function deleteMasterItem(id: string): Promise<boolean> {
+    try {
+      const response = await apiFetch("/api/master-data", { method: "DELETE", headers: { "content-type": "application/json" }, body: JSON.stringify({ id }) });
+      const data = await response.json().catch(() => ({})) as ApiMessage;
+      if (!response.ok) throw new Error(data.error || "Das Stammdatum konnte nicht entfernt werden.");
+      setMasterData((items) => items.map((item) => item.id === id ? { ...item, active: false } : item));
+      setAppError(""); await refreshEmployees(); return true;
+    } catch (error) { setAppError(error instanceof Error ? error.message : "Server nicht erreichbar."); return false; }
   }
-
   return (
     <div className="min-h-screen bg-[#f3f6f8] text-[#162033]">
       <Sidebar view={view} />
       <main className="lg:pl-[244px]">
+        <nav aria-label="Navigation" className="flex gap-1 overflow-x-auto bg-[#132238] p-2 text-sm text-white lg:hidden">
+          {[["/", "Übersicht"], ["/mitarbeiter", "Mitarbeiter"], ["/aufgaben", "Aufgaben"], ["/automationen", "Automationen"], ["/stammdaten", "Stammdaten"], ["/diagnose", "Diagnose"]].map(([href, label]) => <a key={href} href={href} className="shrink-0 rounded-lg px-3 py-2 hover:bg-white/10">{label}</a>)}
+        </nav>
         <header className="sticky top-0 z-10 flex h-[76px] items-center justify-between border-b border-[#dfe5e8] bg-white/95 px-5 backdrop-blur lg:px-8">
           <div>
             <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#708090]">
@@ -706,6 +684,7 @@ function Sidebar({ view }: { view: AppView }) {
             {link.label}
           </a>
         ))}
+        <a className="flex items-center gap-3 rounded-xl px-3 py-3 font-medium text-white/65 hover:bg-white/5" href="/diagnose"><ShieldCheck className="size-4" />Diagnose</a>
       </nav>
       <div className="mt-auto p-4">
         <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
@@ -1155,7 +1134,7 @@ function AutomationsView({
   }, [result]);
   async function saveTargetOu() {
     if (!active) return;
-    const response = await fetch("/api/employees", {
+    const response = await apiFetch("/api/employees", {
       method: "PATCH",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -1184,7 +1163,7 @@ function AutomationsView({
       );
       return;
     }
-    if (mode === "Execute" && job.directory.targetOu === "REVIEW_REQUIRED") {
+    if (mode === "Execute" && job.directory.targetOu === "REVIEW_REQUIRED" && job.actions.some((action) => ["CreateAdUser", "MoveAdUser"].includes(action.type))) {
       setResult(
         "Vor der echten Ausführung muss eine AD-Ziel-OU eingetragen werden.",
       );
@@ -1195,12 +1174,13 @@ function AutomationsView({
     setLatestExecution(null);
     setLiveProgress(null);
     try {
-      const response = await fetch("/api/agent", {
+      const response = await apiFetch("/api/agent", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           ...job,
           requestedMode: mode,
+          executeApproved: mode === "Execute",
           adCredential,
           ...(initialPassword ? { initialPassword } : {}),
           ...(helpdeskCredential ? { helpdeskCredential } : {}),
@@ -1239,7 +1219,7 @@ function AutomationsView({
     setRunning(true);
     setResult("");
     try {
-      const response = await fetch("/api/reference-check", {
+      const response = await apiFetch("/api/reference-check", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
@@ -1431,6 +1411,7 @@ function AutomationsView({
               </div>
             </Card>
           )}
+          {!job.actions.some((action) => ["CreateAdUser", "UpdateAdUser"].includes(action.type)) && job.lifecycleType !== "offboarding" && <Card className="border-amber-300 bg-amber-50 p-4 text-sm">Die Benutzerregel ist manuell oder deaktiviert. Gruppen, AD-Computer und M365 setzen einen bereits vorhandenen Benutzer voraus. Prüfen Sie dessen eindeutige Kontozuordnung vor der Freigabe; der Agent legt keinen Ersatzbenutzer an.</Card>}
           {job.directory.computers.length > 0 && (
             <Card className="border-[#dce3e7] bg-white p-5">
               <p className="font-medium">Computer zuordnen</p>
@@ -1456,7 +1437,7 @@ function AutomationsView({
                             : "Bestehendes AD-Computerobjekt; nur Beschreibung ändern"}
                         </p>
                       </div>
-                      <div className="flex rounded-lg border border-[#dce3e7] p-1">
+                      <div className="flex max-w-full flex-col rounded-lg border border-[#dce3e7] p-1 sm:flex-row">
                         <Button
                           type="button"
                           size="sm"
@@ -1558,7 +1539,7 @@ function AutomationsView({
             <div className="flex items-center justify-between border-b border-white/10 px-5 py-4">
               <div className="flex items-center gap-2">
                 <FileCode2 className="size-4 text-[#5de1d0]" />
-                <h2 className="font-medium">Auszuführendes Skript</h2>
+                <h2 className="font-medium">Auftragsvorschau</h2>
               </div>
               <Button
                 variant="ghost"
@@ -1566,7 +1547,7 @@ function AutomationsView({
                 className="text-white hover:bg-white/10 hover:text-white"
                 onClick={() =>
                   downloadText(
-                    `${job.jobId}.ps1`,
+                    `${job.jobId}-vorschau.txt`,
                     buildPowerShellPreview(active, job),
                     "text/plain",
                   )
@@ -1767,33 +1748,46 @@ function MasterDataView({
   onDelete,
 }: {
   items: MasterDataItem[];
-  onSave: (item: MasterDataItem) => void;
-  onDelete: (id: string) => void;
+  onSave: (item: MasterDataItem) => Promise<boolean>;
+  onDelete: (id: string) => Promise<boolean>;
 }) {
   const [kind, setKind] = useState<MasterDataKind>("group");
   const [label, setLabel] = useState("");
   const [value, setValue] = useState("");
   const [owner, setOwner] = useState("IT");
+  const [editingId, setEditingId] = useState("");
+  const [masterSaving, setMasterSaving] = useState(false);
   const visible = items.filter((item) => item.kind === kind);
-  function add() {
+  async function add() {
     if (!label.trim()) return;
-    onSave({
-      id: `${kind}-${Date.now()}`,
+    setMasterSaving(true);
+    try { const success = await onSave({
+      id: editingId || `${kind}-${Date.now()}`,
       kind,
       label: label.trim(),
       value: value.trim(),
       owner: owner.trim() || "IT",
       active: true,
     });
+    if (!success) return;
     setLabel("");
     setValue("");
+    setEditingId("");
+    } finally { setMasterSaving(false); }
   }
   return (
     <Tabs
       value={kind}
-      onValueChange={(next) => setKind(next as MasterDataKind)}
+      onValueChange={(next) => {
+        setKind(next as MasterDataKind);
+        setEditingId("");
+        setLabel("");
+        setValue("");
+        setOwner("IT");
+      }}
     >
-      <TabsList className="mb-5">
+      <TabsList className="mb-5 max-w-full flex-wrap h-auto">
+        <TabsTrigger value="location">Standorte</TabsTrigger>
         <TabsTrigger value="group">Gruppen</TabsTrigger>
         <TabsTrigger value="application">Anwendungen</TabsTrigger>
         <TabsTrigger value="task">Aufgaben</TabsTrigger>
@@ -1805,7 +1799,7 @@ function MasterDataView({
           <div className="border-b px-5 py-4">
             <h2 className="font-semibold">{kindText[kind]}</h2>
             <p className="mt-1 text-sm text-[#71808c]">
-              Diese Werte steuern Vorschläge und Automationsaufträge.
+              Diese Werte steuern Vorschläge und Automationsaufträge. Aufgabenwert agent führt automatisch aus, manual oder deaktiviert nicht. AD-Computeranlage ist eine separate Regel; physische Gerätebereitstellung bleibt manuell.
             </p>
           </div>
           <Table>
@@ -1820,12 +1814,13 @@ function MasterDataView({
             <TableBody>
               {visible.map((item) => (
                 <TableRow key={item.id}>
-                  <TableCell className="font-medium">{item.label}</TableCell>
+                  <TableCell className="font-medium">{item.label}{!item.active && <span className="ml-2 text-xs text-rose-700">deaktiviert</span>}</TableCell>
                   <TableCell className="font-mono text-xs">
                     {item.value || "—"}
                   </TableCell>
                   <TableCell>{item.owner}</TableCell>
                   <TableCell>
+                    <Button variant="ghost" size="sm" onClick={() => { setEditingId(item.id); setLabel(item.label); setValue(item.value); setOwner(item.owner); }}>Bearbeiten</Button>
                     <Button
                       variant="ghost"
                       size="icon-sm"
@@ -1846,7 +1841,7 @@ function MasterDataView({
           )}
         </Card>
         <Card className="h-fit border-[#dce3e7] bg-white p-5">
-          <h2 className="font-semibold">Eintrag hinzufügen</h2>
+          <h2 className="font-semibold">{editingId ? "Eintrag bearbeiten / aktivieren" : "Eintrag hinzufügen"}</h2>
           <div className="mt-4 space-y-3">
             <Input
               value={label}
@@ -1870,11 +1865,12 @@ function MasterDataView({
               placeholder="Verantwortlich"
             />
             <Button
-              onClick={add}
+              onClick={() => void add()}
+              disabled={masterSaving}
               className="w-full bg-[#176b87] text-white hover:bg-[#12566d]"
             >
               <Plus className="size-4" />
-              Hinzufügen
+              {editingId ? "Speichern" : "Hinzufügen"}
             </Button>
           </div>
         </Card>
@@ -2195,7 +2191,7 @@ function ImportDialog({
                   <p className="text-lg font-semibold">
                     {draft.events[0].type === "onboarding"
                       ? "Onboarding"
-                      : "Offboarding"}
+                      : draft.events[0].type === "change" ? "Wechsel" : "Offboarding"}
                   </p>
                 </div>
                 <Badge
@@ -2295,7 +2291,16 @@ function EmployeeDialog({
   masterData: MasterDataItem[];
 }) {
   const job = buildAutomationJob(person, {}, automationOptions(masterData));
-  const statusUrl = person.shareToken && typeof window !== "undefined"
+  const [shareMessage, setShareMessage] = useState("");
+  async function changeShare(shareAction: "rotate" | "revoke") {
+    try {
+      const response = await apiFetch("/api/employees", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ employeeId: person.id, shareAction }) });
+      if (!response.ok) throw new Error("Statuslink konnte nicht geändert werden.");
+      setShareMessage(shareAction === "rotate" ? "Neuer Leselink erstellt (30 Tage). Alte Links sind widerrufen." : "Statuslink widerrufen.");
+      onRefresh();
+    } catch (error) { setShareMessage(error instanceof Error ? error.message : "Statuslink konnte nicht geändert werden."); }
+  }
+  const statusUrl = person.shareToken && person.shareExpiresAt && typeof window !== "undefined"
     ? `${window.location.origin}/status/${person.shareToken}`
     : "";
   return (
@@ -2340,6 +2345,7 @@ function EmployeeDialog({
                   <AlertDialogDescription>
                     Die Akte von {person.firstName} {person.lastName} sowie
                     Aufgaben, Systeme und Historie werden dauerhaft entfernt.
+                    Akten mit laufenden oder ausgeführten Aufträgen bleiben erhalten. Erledigte Vorgänge werden automatisch aus der offenen Übersicht entfernt und stehen später für Wechsel und Offboarding bereit.
                   </AlertDialogDescription>
                 </AlertDialogHeader>
                 <AlertDialogFooter>
@@ -2356,7 +2362,7 @@ function EmployeeDialog({
           </div>
         </div>
         <Tabs defaultValue="inventory" className="p-6">
-          <TabsList variant="line" className="mb-5 flex-wrap">
+          <TabsList variant="line" className="mb-5 h-auto flex-wrap gap-2">
             <TabsTrigger value="inventory">
               <Boxes />
               Ausstattung
@@ -2375,11 +2381,16 @@ function EmployeeDialog({
             </TabsTrigger>
           </TabsList>
           <TabsContent value="inventory">
+            <div className="mb-4 flex flex-wrap gap-2">
+              <Button variant="outline" onClick={() => void changeShare("rotate")}>Leselink neu erstellen (30 Tage)</Button>
+              {person.shareToken && <Button variant="outline" onClick={() => void changeShare("revoke")}>Leselink widerrufen</Button>}
+              {shareMessage && <p className="w-full text-sm">{shareMessage}</p>}
+            </div>
             {statusUrl && (
               <div className="mb-4 flex flex-col gap-3 rounded-xl border border-[#bcdde1] bg-[#eef7f8] p-4 sm:flex-row sm:items-center sm:justify-between">
                 <div>
                   <p className="font-medium text-[#12566d]">Freigegebene Statusansicht</p>
-                  <p className="mt-1 text-sm text-[#56727b]">Der Link zeigt Aufgaben, Zugänge und Fortschritt – ohne kritische IT-Aktionen.</p>
+                  <p className="mt-1 text-sm text-[#56727b]">Reine Leseansicht mit begrenzten Daten. Gültig bis {formatDate(person.shareExpiresAt)}.</p>
                 </div>
                 <a href={statusUrl} target="_blank" rel="noreferrer" className="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-[#8cc8cf] bg-white px-3 text-sm font-medium text-[#12566d] hover:bg-[#f8ffff]">
                   <Link2 className="size-4" />Vorschau öffnen
@@ -2460,7 +2471,7 @@ function EmployeeDialog({
               </div>
               <div className="lg:col-span-2">
                 <pre className="overflow-auto rounded-xl bg-[#132238] p-4 text-sm leading-6 text-[#c8d7e5]">
-                  {buildPowerShellPreview(person)}
+                  {buildPowerShellPreview(person, job)}
                 </pre>
               </div>
               <div className="lg:col-span-2">
@@ -2474,6 +2485,10 @@ function EmployeeDialog({
             </div>
           </TabsContent>
           <TabsContent value="history">
+            <div className="mb-5 space-y-3">
+              <h3 className="font-semibold">Änderungsprotokoll</h3>
+              {(person.auditEntries ?? []).map((entry) => <div key={entry.id} className="rounded-xl border p-3"><p className="text-sm font-medium">{entry.action}</p><p className="mt-1 break-words text-sm text-[#71808b]">{entry.detail}</p><p className="mt-1 text-xs text-[#94a0a8]">{formatDate(entry.createdAt)}</p></div>)}
+            </div>
             <div className="space-y-4 border-l border-[#ccd8dd] pl-5">
               {person.events.map((event) => (
                 <div key={event.id} className="relative">
@@ -2596,16 +2611,33 @@ function ExecutionHistory({
   const [message, setMessage] = useState("");
   const [rollbackRun, setRollbackRun] = useState<AutomationRun | null>(null);
   const [retryRun, setRetryRun] = useState<AutomationRun | null>(null);
-  const retryActionType = retryRun ? failedAutomationAction(retryRun) : "";
-  const availableActionTypes = new Set(
-    buildAutomationJob(person, {}, automationOptions(masterData)).actions.map((action) => action.type),
-  );
+  const [selectedRetryAction, setSelectedRetryAction] = useState("");
+  const [reviewTarget, setReviewTarget] = useState<{ run: AutomationRun; action: string; resolution: "verified_no_effect" | "rollback_conflict_resolved" } | null>(null);
+  const [reviewEvidence, setReviewEvidence] = useState("");
+  const [reviewConfirmed, setReviewConfirmed] = useState(false);
+  const [reviewSaving, setReviewSaving] = useState(false);
+  function openReview(run: AutomationRun, action: string) {
+    setReviewTarget({ run, action, resolution: run.operation === "rollback" ? "rollback_conflict_resolved" : "verified_no_effect" });
+    setReviewEvidence(""); setReviewConfirmed(false);
+  }
+  async function saveReview() {
+    if (!reviewTarget || !reviewConfirmed || reviewEvidence.trim().length < 20) return;
+    setReviewSaving(true);
+    try {
+      const response = await apiFetch("/api/executions", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ runId: reviewTarget.run.id, action: reviewTarget.action, resolution: reviewTarget.resolution, evidence: reviewEvidence.trim() }) });
+      const data = await response.json().catch(() => ({})) as ApiMessage;
+      if (!response.ok) throw new Error(data.error || "Die Klärung konnte nicht gespeichert werden.");
+      setReviewTarget(null); setMessage("Manuelle Prüfung protokolliert. Eine neue Ausführung benötigt weiterhin Ihre ausdrückliche Freigabe."); onRefresh();
+    } catch (error) { setMessage(error instanceof Error ? error.message : "Prüfung konnte nicht gespeichert werden."); }
+    finally { setReviewSaving(false); }
+  }
+  const retryActionType = retryRun ? selectedRetryAction || failedAutomationAction(retryRun) : "";
   async function rollback(run: AutomationRun, adCredential: AdCredential) {
     setMessage("");
-    const response = await fetch("/api/executions", {
+    const response = await apiFetch("/api/executions", {
       method: "PATCH",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ runId: run.id, mode: "Execute", adCredential }),
+      body: JSON.stringify({ runId: run.id, mode: "Execute", executeApproved: true, adCredential }),
     });
     const data = (await response.json()) as ApiMessage;
     setMessage(
@@ -2624,12 +2656,9 @@ function ExecutionHistory({
     initialPassword?: string,
     helpdeskCredential?: AdCredential,
   ) {
-    const actionType = failedAutomationAction(run);
+    const actionType = selectedRetryAction || failedAutomationAction(run);
     const preparedJob = buildAutomationJob(person, {}, automationOptions(masterData));
-    const actionIndex = preparedJob.actions.findIndex(
-      (action) => action.type === actionType,
-    );
-    if (!actionType || actionIndex < 0) {
+    if (!actionType) {
       setMessage(
         "Diese Aktion kann aus den aktuellen Daten nicht sicher rekonstruiert werden. Bitte den Schritt in der Automationsansicht erneut vorbereiten.",
       );
@@ -2637,29 +2666,17 @@ function ExecutionHistory({
     }
     const retryJob = {
       ...preparedJob,
-      jobId: `retry-${person.personnelNumber}-${Date.now()}`,
+      jobId: `retry-${crypto.randomUUID()}`,
       createdAt: new Date().toISOString(),
       requestedMode: "Execute" as const,
+      executeApproved: true,
       retryOfRunId: run.id,
       retryAction: actionType,
-      actions: [preparedJob.actions[actionIndex]],
-      automationTaskIds:
-        actionType === "ProvisionM365Mailbox"
-          ? person.tasks
-              .filter(
-                (task) =>
-                  task.status !== "done" &&
-                  /e-?mail|postfach/i.test(task.title),
-              )
-              .map((task) => task.id)
-          : run.status === "partial" &&
-        actionIndex === preparedJob.actions.length - 1
-          ? preparedJob.automationTaskIds
-          : [],
+      actions: preparedJob.actions.filter((action) => action.type === actionType),
     };
     setMessage(`${executionActionLabel(actionType)} wird erneut gestartet …`);
     try {
-      const response = await fetch("/api/agent", {
+      const response = await apiFetch("/api/agent", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
@@ -2690,6 +2707,15 @@ function ExecutionHistory({
     );
   return (
     <div className="space-y-4">
+      <Dialog open={!!reviewTarget} onOpenChange={(open) => { if (!open && !reviewSaving) setReviewTarget(null); }}>
+        <DialogContent>
+          <DialogHeader><DialogTitle>Externen Zustand manuell klären</DialogTitle><DialogDescription>Auftrag {reviewTarget?.run.jobId}: {reviewTarget?.action === "unknown" ? "Unbekannte externe Wirkung" : executionActionLabel(reviewTarget?.action ?? "")}.</DialogDescription></DialogHeader>
+          <p className="text-sm">{reviewTarget?.resolution === "rollback_conflict_resolved" ? "Prüfen und bereinigen Sie den Rücknahmekonflikt im Zielsystem. Die nächste Rücknahme kontrolliert den aktuellen Zustand erneut." : "Prüfen Sie das Zielsystem und die Gateway-Protokolle. Freigabe nur, wenn diese Aktion keine externe Änderung bewirkt hat. Bei vorhandenen Änderungen bleibt der Auftrag gesperrt und erfordert manuelle Nacharbeit."}</p>
+          <label className="space-y-2 text-sm">Prüfnachweis (mindestens 20 Zeichen)<Textarea value={reviewEvidence} onChange={(event) => setReviewEvidence(event.target.value)} maxLength={2000} placeholder="Geprüftes Objekt, Zeitpunkt und Ergebnis; keine Kennwörter oder Tokens" /></label>
+          <label className="flex items-start gap-2 text-sm"><Checkbox checked={reviewConfirmed} onCheckedChange={(checked) => setReviewConfirmed(checked === true)} />{reviewTarget?.resolution === "rollback_conflict_resolved" ? "Extern geprüft: Rücknahmekonflikt manuell bereinigt; aktueller Zustand geprüft." : "Extern geprüft: keine Wirkung dieser Aktion; eine erneute Ausführung ist sicher."}</label>
+          <DialogFooter><Button variant="outline" disabled={reviewSaving} onClick={() => setReviewTarget(null)}>Abbrechen</Button><Button disabled={reviewSaving || !reviewConfirmed || reviewEvidence.trim().length < 20} onClick={() => void saveReview()}>Prüfung protokollieren</Button></DialogFooter>
+        </DialogContent>
+      </Dialog>
       <AdCredentialDialog
         open={!!rollbackRun}
         setOpen={(open) => {
@@ -2817,29 +2843,15 @@ function ExecutionHistory({
               </AlertDialog>
             )}
           </div>
-          {run.error && (
+          {(run.error || run.actionResults?.some((item) => item.status === "failed")) && (
             <div className="mt-4 rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-900">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <p className="font-medium">Fehler des Management-Agenten</p>
-                {run.operation === "execute" &&
-                  run.mode === "Execute" &&
-                  ["partial", "failed"].includes(run.status) &&
-                  availableActionTypes.has(failedAutomationAction(run)) &&
-                  !runs.some(
-                    (candidate) =>
-                      candidate.relatedRunId === run.id &&
-                      candidate.status === "completed",
-                  ) && (
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="border-rose-300 bg-white text-rose-800 hover:bg-rose-100"
-                      onClick={() => setRetryRun(run)}
-                    >
-                      <RotateCcw className="size-4" />
-                      Nur diese Aktion erneut ausführen
-                    </Button>
-                  )}
+                {run.operation === "execute" && run.mode === "Execute" && ["partial", "failed", "reviewed"].includes(run.status) && (run.actionResults ?? []).filter((item) => item.status === "failed" && !runs.some((candidate) => candidate.relatedRunId === run.id && candidate.actionResults?.some((result) => result.action === item.action && result.status === "completed"))).map((item) => (
+                  <Button key={item.action} variant="outline" size="sm" className="border-rose-300 bg-white text-rose-800 hover:bg-rose-100" onClick={() => { setSelectedRetryAction(item.action); setRetryRun(run); }}>
+                    <RotateCcw className="size-4" />{executionActionLabel(item.action)} wiederholen
+                  </Button>
+                ))}
               </div>
               <p className="mt-1 break-words">{run.error}</p>
               {failedAutomationAction(run) && (
@@ -2857,6 +2869,8 @@ function ExecutionHistory({
             </div>
           )}
           <div className="mt-4">
+            {(run.status === "review_required" || run.actionResults?.some((item) => item.status === "review_required")) && <div className="mb-3 space-y-2 rounded-lg border border-amber-300 bg-amber-50 p-3"><p className="text-sm">Keine automatische Wiederholung: Der externe Zustand muss zuerst manuell geprüft werden.</p>{run.operation === "rollback" ? <Button variant="outline" onClick={() => openReview(run, "rollback")}>Rücknahmekonflikt klären</Button> : (run.actionResults?.filter((item) => item.status === "review_required").length ? run.actionResults.filter((item) => item.status === "review_required").map((item) => <Button key={item.action} variant="outline" onClick={() => openReview(run, item.action)}>{executionActionLabel(item.action)} klären</Button>) : <Button variant="outline" onClick={() => openReview(run, "unknown")}>Unbekannte Wirkung klären</Button>)}</div>}
+            {(run.actionResults ?? []).length > 0 && <div className="mb-3 space-y-2">{run.actionResults?.map((item) => <div key={item.action} className="rounded-lg border p-2 text-sm"><span className="font-medium">{executionActionLabel(item.action)}</span> · {item.status === "review_required" ? "Prüfung erforderlich – externe Wirkung klären, keine automatische Wiederholung" : statusText[item.status] ?? item.status}{item.error && <p className="mt-1 break-words text-rose-700">{item.error}</p>}</div>)}</div>}
             {run.status === "queued" && !run.changes.length ? (
               <p className="rounded-xl border border-dashed p-3 text-sm text-[#71808c]">
                 Ergebnis wird noch abgerufen.

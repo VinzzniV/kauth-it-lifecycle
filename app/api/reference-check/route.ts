@@ -1,8 +1,11 @@
-import { eq } from "drizzle-orm";
+import { env } from "cloudflare:workers";
+import { and, eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import { getDb } from "../../../db";
-import { automationRuns, employees } from "../../../db/schema";
+import { employees } from "../../../db/schema";
 import { forwardToManagementAgent } from "../../../lib/management-agent";
+import { queueJob, recordDispatchFailure } from "../../../lib/automation-store";
+import { apiError } from "../../../lib/automation-contract";
 
 export async function POST(request: Request) {
   try {
@@ -44,7 +47,7 @@ export async function POST(request: Request) {
         { status: 404 },
       );
 
-    const jobId = `reference-${person.personnelNumber}-${Date.now()}`;
+    const jobId = `reference-${crypto.randomUUID()}`;
     const now = new Date().toISOString();
     const job = {
       schemaVersion: 1,
@@ -57,7 +60,7 @@ export async function POST(request: Request) {
         displayName: `${person.firstName} ${person.lastName}`,
       },
       directory: {
-        domain: "kauth.local",
+        domain: (env as unknown as Record<string, string | undefined>).AD_DOMAIN || "kauth.local",
         referenceUser: {
           query: payload.referenceUser,
           displayName: payload.referenceUser,
@@ -67,6 +70,7 @@ export async function POST(request: Request) {
       automationTaskIds: [],
     };
 
+    await queueJob(job);
     await db
       .update(employees)
       .set({
@@ -77,20 +81,6 @@ export async function POST(request: Request) {
         updatedAt: now,
       })
       .where(eq(employees.id, person.id));
-    await db
-      .insert(automationRuns)
-      .values({
-        id: jobId,
-        employeeId: person.id,
-        jobId,
-        operation: "reference_check",
-        mode: "WhatIf",
-        status: "queued",
-        canRollback: false,
-        startedAt: now,
-        error: "",
-      })
-      .onConflictDoNothing();
     try {
       await forwardToManagementAgent(job);
     } catch (error) {
@@ -98,32 +88,18 @@ export async function POST(request: Request) {
         error instanceof Error
           ? error.message
           : "Management-Agent nicht erreichbar";
-      await db
-        .update(automationRuns)
-        .set({
-          status: "failed",
-          completedAt: new Date().toISOString(),
-          error: message,
-        })
-        .where(eq(automationRuns.id, jobId));
+      const status = await recordDispatchFailure(job, error);
       await db
         .update(employees)
         .set({
           directoryReferenceStatus: "error",
           directoryReferenceMessage: message,
         })
-        .where(eq(employees.id, person.id));
-      throw error;
+        .where(and(eq(employees.id, person.id), sql`NOT EXISTS (SELECT 1 FROM automation_receipts WHERE job_id = ${jobId})`));
+      return Response.json({ ok: true, jobId, status }, { status: 202 });
     }
     return Response.json({ ok: true, jobId });
   } catch (error) {
-    const message =
-      error instanceof Error
-        ? error.message
-        : "Referenzbenutzer konnte nicht geprüft werden.";
-    return Response.json(
-      { error: message },
-      { status: error instanceof z.ZodError ? 400 : 503 },
-    );
+    return apiError(error);
   }
 }

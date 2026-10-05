@@ -1,0 +1,22 @@
+{
+  admin off
+  auto_https off
+  log {
+    format filter {
+      wrap json
+      fields {
+        request>uri replace "[redacted]"
+        request>headers delete
+      }
+    }
+  }
+}
+https://{$WEB_TLS_HOST}:443 {
+  tls /certs/web.crt /certs/web.key
+  reverse_proxy it-lifecycle:8080
+  header {
+    Referrer-Policy "no-referrer"
+    X-Content-Type-Options "nosniff"
+  }
+  # Access logging stays disabled: status URLs contain bearer tokens.
+}

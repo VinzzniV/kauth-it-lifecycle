@@ -101,4 +101,10 @@ body {
 }
 
 * { border-color: var(--border); }
+main, section, aside, [data-slot="card"], [data-slot="tabs-content"] { min-width: 0; }
+.grid > * { min-width: 0; }
+main { overflow-wrap: anywhere; }
+[data-slot="dialog-content"] { max-width: calc(100vw - 2rem); overflow-wrap: anywhere; }
+[data-slot="tabs-list"] { max-width: 100%; }
+pre { max-width: 100%; overflow-x: auto; }
 button, a, input { transition: color 150ms ease, background-color 150ms ease, border-color 150ms ease, box-shadow 150ms ease; }

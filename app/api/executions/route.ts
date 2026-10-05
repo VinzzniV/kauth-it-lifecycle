@@ -1,355 +1,76 @@
-import { env } from "cloudflare:workers";
-import { and, desc, eq, inArray, ne } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { z } from "zod";
 import { getDb } from "../../../db";
-import {
-  auditEntries,
-  automationChanges,
-  automationRuns,
-  employees,
-  lifecycleEvents,
-  workflowTasks,
-} from "../../../db/schema";
-import { forwardToManagementAgent } from "../../../lib/management-agent";
+import { auditEntries, automationActions, automationLocks, automationRuns, employees } from "../../../db/schema";
+import { apiError, ContractError, credentialSchema, resultSchema } from "../../../lib/automation-contract";
+import { importResult, queueJob, recordDispatchFailure } from "../../../lib/automation-store";
+import { forwardToManagementAgent, ManagementHttpError, reconcileManagementJob } from "../../../lib/management-agent";
 
-const changeSchema = z.object({
-  id: z.string().optional(),
-  action: z.string(),
-  resourceType: z.string(),
-  resourceId: z.string(),
-  relation: z.string().default(""),
-  beforeValue: z.unknown().optional(),
-  afterValue: z.unknown().optional(),
-  rollbackAction: z.string().default("manual"),
-  status: z.string().default("completed"),
-});
-const adCredentialSchema = z.object({
-  username: z
-    .string()
-    .trim()
-    .min(1)
-    .max(200)
-    .regex(
-      /^[\p{L}\p{N}._@\\-]+$/u,
-      "Der AD-Benutzername enthält ungültige Zeichen.",
-    ),
-  password: z.string().min(1).max(512),
-});
-const stringArraySchema = z.preprocess((value) => {
-  if (value == null) return [];
-  if (Array.isArray(value)) return value;
-  if (typeof value === "object")
-    return Object.values(value as Record<string, unknown>).filter(
-      (item) => typeof item === "string",
-    );
-  return [value];
-}, z.array(z.string()));
-const resultSchema = z.object({
-  schemaVersion: z.literal(1),
-  runId: z.string(),
-  jobId: z.string(),
-  employeeId: z.string(),
-  operation: z.enum(["execute", "rollback", "reference_check"]),
-  mode: z.enum(["WhatIf", "Execute"]),
-  status: z.enum(["completed", "partial", "failed"]),
-  relatedRunId: z.string().nullable().optional(),
-  startedAt: z.string(),
-  completedAt: z.string(),
-  error: z.string().optional(),
-  automationTaskIds: stringArraySchema.default([]),
-  changes: z.array(changeSchema).default([]),
-  referenceLookup: z
-    .object({
-      query: z.string(),
-      status: z.enum(["found", "not_found", "ambiguous"]),
-      count: z.number(),
-      samAccountName: z.string().optional(),
-      displayName: z.string().optional(),
-      distinguishedName: z.string().optional(),
-      targetOu: z.string().optional(),
-    })
-    .nullable()
-    .optional(),
-});
-const jsonValue = (value: unknown) =>
-  value === undefined ? null : JSON.stringify(value);
+export async function POST() {
+  return Response.json({ error: "Ergebnisse werden ausschließlich vom authentifizierten Gateway übernommen." }, { status: 403 });
+}
 
-export async function POST(request: Request) {
+export async function PUT(request: Request) {
   try {
-    const runtime = env as unknown as Record<string, string | undefined>;
-    const requestUrl = new URL(request.url);
-    const origin = request.headers.get("origin");
-    const forwardedHost =
-      request.headers.get("x-forwarded-host") ?? request.headers.get("host");
-    const sameOrigin =
-      request.headers.get("sec-fetch-site") === "same-origin" ||
-      origin === requestUrl.origin ||
-      (!!origin && !!forwardedHost && new URL(origin).host === forwardedHost);
-    if (
-      runtime.MANAGEMENT_AGENT_TOKEN &&
-      !sameOrigin &&
-      request.headers.get("authorization") !==
-        `Bearer ${runtime.MANAGEMENT_AGENT_TOKEN}`
-    )
-      return Response.json({ error: "Nicht autorisiert." }, { status: 401 });
-    const result = resultSchema.parse(await request.json());
+    const input = z.object({ runId: z.string().min(1), action: z.string().min(1), resolution: z.enum(["verified_no_effect", "rollback_conflict_resolved", "gateway_reconcile"]), evidence: z.string().trim().min(20).max(2000) }).parse(await request.json());
     const db = getDb();
-    const canRollback =
-      result.operation === "execute" &&
-      result.mode === "Execute" &&
-      ["completed", "partial"].includes(result.status) &&
-      result.changes.some((change) => change.rollbackAction !== "manual");
-    await db
-      .insert(automationRuns)
-      .values({
-        id: result.runId,
-        employeeId: result.employeeId,
-        jobId: result.jobId,
-        operation: result.operation,
-        mode: result.mode,
-        status: result.status,
-        relatedRunId: result.relatedRunId ?? null,
-        canRollback,
-        startedAt: result.startedAt,
-        completedAt: result.completedAt,
-        error: result.error ?? "",
-      })
-      .onConflictDoUpdate({
-        target: automationRuns.id,
-        set: {
-          status: result.status,
-          canRollback,
-          completedAt: result.completedAt,
-          error: result.error ?? "",
-        },
-      });
-    await db
-      .delete(automationChanges)
-      .where(eq(automationChanges.runId, result.runId));
-    for (let index = 0; index < result.changes.length; index += 8) {
-      await db.insert(automationChanges).values(
-        result.changes.slice(index, index + 8).map((change, offset) => ({
-          id: change.id ?? `${result.runId}-${index + offset}`,
-          runId: result.runId,
-          action: change.action,
-          resourceType: change.resourceType,
-          resourceId: change.resourceId,
-          relation: change.relation,
-          beforeValue: jsonValue(change.beforeValue),
-          afterValue: jsonValue(change.afterValue),
-          rollbackAction: change.rollbackAction,
-          status: change.status,
-        })),
-      );
+    const [run] = await db.select().from(automationRuns).where(eq(automationRuns.id, input.runId)).limit(1);
+    if (input.resolution === "gateway_reconcile") {
+      if (!run || !["queued", "review_required"].includes(run.status) || run.resultJson) throw new ContractError("Auftrag benötigt keinen Gateway-Abgleich.", 409);
+      const proof = await (await reconcileManagementJob(run.jobId)).json() as { jobId?: string; noExecution?: boolean; result?: unknown };
+      if (proof.jobId !== run.jobId) throw new ContractError("Gateway-Abgleich gehört zu einem anderen Auftrag.", 409);
+      if (proof.result) return Response.json(await importResult(resultSchema.parse(proof.result)));
+      if (proof.noExecution === true) {
+        await recordDispatchFailure(JSON.parse(run.jobJson), new ManagementHttpError("Gateway-Abgleich: Auftrag wurde nie angenommen und gegen verspätete Annahme gesperrt.", 409, true));
+        return Response.json({ ok: true, status: "failed" });
+      }
+      return Response.json({ ok: true, status: "running", message: "Gateway kennt den Auftrag; abschließendes Ergebnis abwarten." }, { status: 202 });
     }
-    if (result.operation === "reference_check") {
-      const lookup = result.referenceLookup;
-      const message = lookup
-        ? lookup.status === "found"
-          ? `${lookup.displayName ?? lookup.samAccountName ?? lookup.query} gefunden`
-          : lookup.status === "ambiguous"
-            ? `${lookup.count} passende Benutzer gefunden`
-            : "Referenzbenutzer nicht gefunden"
-        : result.error || "Die Referenzprüfung ist fehlgeschlagen.";
-      await db
-        .update(employees)
-        .set({
-          directoryReferenceUser: lookup?.samAccountName ?? lookup?.query,
-          directoryReferenceStatus: lookup?.status ?? "error",
-          directoryReferenceMessage: message,
-          directoryTargetOu:
-            lookup?.status === "found" ? (lookup.targetOu ?? "") : "",
-          updatedAt: result.completedAt,
-        })
-        .where(eq(employees.id, result.employeeId));
-      await db.insert(auditEntries).values({
-        employeeId: result.employeeId,
-        action: "Referenzbenutzer geprüft",
-        detail: `${lookup?.query ?? "Unbekannte Abfrage"}: ${message}`,
-      });
-      return Response.json({ ok: true });
-    }
-    if (
-      result.operation === "rollback" &&
-      result.relatedRunId &&
-      result.status === "completed"
-    ) {
-      await db
-        .update(automationRuns)
-        .set({ canRollback: false, status: "rolled_back" })
-        .where(eq(automationRuns.id, result.relatedRunId));
-      await db
-        .update(workflowTasks)
-        .set({ status: "ready", completedAt: null })
-        .where(
-          and(
-            eq(workflowTasks.employeeId, result.employeeId),
-            eq(workflowTasks.executionType, "simulated"),
-          ),
-        );
-      const [latestEvent] = await db
-        .select({ type: lifecycleEvents.type })
-        .from(lifecycleEvents)
-        .where(eq(lifecycleEvents.employeeId, result.employeeId))
-        .orderBy(desc(lifecycleEvents.importedAt))
-        .limit(1);
-      await db
-        .update(employees)
-        .set({
-          status: latestEvent?.type === "offboarding" ? "leaving" : "pending",
-          updatedAt: result.completedAt,
-        })
-        .where(eq(employees.id, result.employeeId));
-    }
-    if (
-      result.operation === "execute" &&
-      result.mode === "Execute" &&
-      result.status === "completed" &&
-      result.automationTaskIds.length
-    ) {
-      await db
-        .update(workflowTasks)
-        .set({ status: "done", completedAt: result.completedAt })
-        .where(
-          and(
-            eq(workflowTasks.employeeId, result.employeeId),
-            inArray(workflowTasks.id, result.automationTaskIds),
-          ),
-        );
-    }
-    const remaining = await db
-      .select({ id: workflowTasks.id })
-      .from(workflowTasks)
-      .where(
-        and(
-          eq(workflowTasks.employeeId, result.employeeId),
-          ne(workflowTasks.status, "done"),
-        ),
-      )
-      .limit(1);
-    if (result.operation === "execute" && !remaining.length)
-      await db
-        .update(employees)
-        .set({ status: "completed", updatedAt: result.completedAt })
-        .where(eq(employees.id, result.employeeId));
-    await db.insert(auditEntries).values({
-      employeeId: result.employeeId,
-      action:
-        result.operation === "rollback"
-          ? "Automation zurückgenommen"
-          : result.relatedRunId
-            ? "Automation-Aktion wiederholt"
-            : "Automation ausgeführt",
-      detail: `${result.jobId}: ${result.status}${result.relatedRunId ? ` (Ausgangslauf: ${result.relatedRunId})` : ""}`,
-    });
+    if (!run || run.mode !== "Execute" || !["review_required", "partial"].includes(run.status) || !run.resultJson) throw new ContractError("Vor manueller Klärung muss ein authentifiziertes abschließendes Gateway-Ergebnis vorliegen. Eine unbestätigte Übergabe kann noch laufen.", 409);
+    const result = JSON.parse(run.resultJson);
+    const review = JSON.parse(run.reviewJson ?? "{}");
+    if (review[input.action]) throw new ContractError("Diese Klärung wurde bereits dokumentiert.", 409);
+    if (input.resolution === "verified_no_effect") {
+      const outcome = result.actionResults.find((a: { action: string; status: string }) => a.action === input.action && a.status === "review_required");
+      if (run.operation !== "execute" || !outcome || result.changes.some((c: { action: string; status: string }) => c.action === input.action && c.status === "completed")) throw new ContractError("Dokumentierte Änderungen verhindern die Freigabe als wirkungslos. Manuelle Nacharbeit erforderlich.", 409);
+    } else if (run.operation !== "rollback" || input.action !== "rollback" || !run.resultJson) throw new ContractError("Die Klärung benötigt ein abgeschlossenes Rücknahmeergebnis.", 409);
+    review[input.action] = input.resolution;
+    const reviewable = and(eq(automationRuns.id, run.id), eq(automationRuns.resultJson, run.resultJson), inArray(automationRuns.status, ["review_required", "partial"]), sql`EXISTS (SELECT 1 FROM automation_locks WHERE job_id = ${run.jobId})`);
+    const stillReviewable = sql`EXISTS (SELECT 1 FROM automation_runs WHERE id = ${run.id} AND result_json = ${run.resultJson} AND status IN ('review_required','partial')) AND EXISTS (SELECT 1 FROM automation_locks WHERE job_id = ${run.jobId})`;
+    const statements: [Parameters<typeof db.batch>[0][number], ...Parameters<typeof db.batch>[0][number][]] = [db.update(automationRuns).set({ reviewJson: sql`json_patch(COALESCE(review_json, '{}'), ${JSON.stringify({ [input.action]: input.resolution })})` }).where(reviewable)];
+    if (input.resolution === "verified_no_effect") statements.push(db.update(automationActions).set({ status: "failed" }).where(and(eq(automationActions.jobId, run.jobId), eq(automationActions.action, input.action), inArray(automationActions.status, ["queued", "review_required"]), stillReviewable)));
+    statements.push(db.update(automationRuns).set({ status: sql`CASE WHEN operation = 'execute' AND EXISTS (SELECT 1 FROM automation_actions WHERE job_id = ${run.jobId} AND status IN ('queued','review_required')) THEN 'review_required' ELSE 'reviewed' END` }).where(reviewable));
+    statements.push(db.delete(automationLocks).where(and(eq(automationLocks.jobId, run.jobId), sql`EXISTS (SELECT 1 FROM automation_runs WHERE id = ${run.id} AND status = 'reviewed')`)));
+    statements.push(db.insert(auditEntries).values({ employeeId: run.employeeId, action: "Automation manuell geprüft", detail: `${run.jobId} / ${input.action} / ${input.resolution}: ${input.evidence}` }));
+    await db.batch(statements);
     return Response.json({ ok: true });
-  } catch (error) {
-    return Response.json(
-      {
-        error:
-          error instanceof Error
-            ? error.message
-            : "Ergebnis konnte nicht gespeichert werden.",
-      },
-      { status: 400 },
-    );
-  }
+  } catch (error) { return apiError(error); }
 }
 
 export async function PATCH(request: Request) {
   try {
-    const { runId, mode, adCredential } = z
-      .object({
-        runId: z.string(),
-        mode: z.enum(["WhatIf", "Execute"]).default("Execute"),
-        adCredential: adCredentialSchema,
-      })
-      .parse(await request.json());
+    const input = z.object({ runId: z.string().min(1), mode: z.enum(["WhatIf", "Execute"]).default("WhatIf"), executeApproved: z.boolean().optional(), adCredential: credentialSchema }).parse(await request.json());
+    if (input.mode === "Execute" && !input.executeApproved) throw new ContractError("Execute-Rücknahme benötigt eine ausdrückliche Freigabe.");
     const db = getDb();
-    const [run] = await db
-      .select()
-      .from(automationRuns)
-      .where(eq(automationRuns.id, runId))
-      .limit(1);
-    if (!run || run.operation !== "execute" || !run.canRollback)
-      return Response.json(
-        { error: "Für diese Ausführung ist kein Rollback verfügbar." },
-        { status: 409 },
-      );
-    const [person, changes] = await Promise.all([
-      db
-        .select()
-        .from(employees)
-        .where(eq(employees.id, run.employeeId))
-        .limit(1)
-        .then((rows) => rows[0]),
-      db
-        .select()
-        .from(automationChanges)
-        .where(eq(automationChanges.runId, run.id)),
-    ]);
-    if (!person)
-      return Response.json(
-        { error: "Mitarbeiterakte wurde nicht gefunden." },
-        { status: 404 },
-      );
-    const rollbackJobId = `rollback-${run.jobId}-${Date.now()}`;
-    const recordedUser = changes.find(
-      (change) =>
-        change.resourceType === "AD-Benutzer" &&
-        !change.resourceId.includes(","),
-    )?.resourceId;
-    const fallbackUser = `${person.firstName}.${person.lastName}`
-      .toLowerCase()
-      .replace(/ä/g, "ae")
-      .replace(/ö/g, "oe")
-      .replace(/ü/g, "ue")
-      .replace(/ß/g, "ss")
-      .normalize("NFD")
-      .replace(/[\u0300-\u036f]/g, "")
-      .replace(/[^a-z0-9.-]/g, "");
-    const rollbackJob = {
-      schemaVersion: 1,
-      operation: "rollback",
-      runId: rollbackJobId,
-      jobId: rollbackJobId,
-      requestedMode: mode,
-      lifecycleType: "change",
-      person: {
-        employeeId: person.id,
-        personnelNumber: person.personnelNumber,
-        displayName: `${person.firstName} ${person.lastName}`,
-      },
-      directory: {
-        domain: "kauth.local",
-        samAccountName: recordedUser ?? fallbackUser,
-      },
-      adCredential,
-      automationTaskIds: [],
-      originalRun: { id: run.id, changes },
+    const [run] = await db.select().from(automationRuns).where(eq(automationRuns.id, input.runId)).limit(1);
+    if (!run?.canRollback || run.operation !== "execute" || run.mode !== "Execute" || !run.resultJson) throw new ContractError("Für diese Ausführung ist keine geprüfte Rücknahme verfügbar.", 409);
+    const [person] = await db.select().from(employees).where(eq(employees.id, run.employeeId)).limit(1);
+    if (!person) throw new ContractError("Mitarbeiterakte wurde nicht gefunden.", 404);
+    const previous = await db.select().from(automationRuns).where(and(eq(automationRuns.relatedRunId, run.id), eq(automationRuns.operation, "rollback"), eq(automationRuns.mode, "Execute")));
+    const undone = new Set(previous.flatMap((r) => r.resultJson ? JSON.parse(r.resultJson).changes.filter((c: { status: string }) => c.status === "completed").map((c: { sourceChangeId: string }) => c.sourceChangeId) : []));
+    const originalJob = JSON.parse(run.jobJson);
+    const originalResult = JSON.parse(run.resultJson);
+    const changes = originalResult.changes.filter((c: { id: string; status: string; rollbackAction: string }) => c.status === "completed" && c.rollbackAction !== "manual" && !undone.has(c.id));
+    if (!changes.length) throw new ContractError("Keine noch ausstehende automatische Rücknahme vorhanden.", 409);
+    const jobId = `rollback-${crypto.randomUUID()}`;
+    const job = { schemaVersion: 1, operation: "rollback", jobId, runId: jobId,
+      requestedMode: input.mode, executeApproved: input.executeApproved === true,
+      lifecycleType: "change", person: originalJob.person, directory: originalJob.directory,
+      adCredential: input.adCredential, automationTaskIds: [], originalRun: { id: run.id, mode: "Execute", changes },
     };
-    await forwardToManagementAgent(rollbackJob);
-    await db.insert(automationRuns).values({
-      id: rollbackJob.jobId,
-      employeeId: person.id,
-      jobId: rollbackJob.jobId,
-      operation: "rollback",
-      mode,
-      status: "queued",
-      relatedRunId: run.id,
-      canRollback: false,
-      startedAt: new Date().toISOString(),
-      error: "",
-    });
-    return Response.json({ ok: true, jobId: rollbackJob.jobId });
-  } catch (error) {
-    const message =
-      error instanceof Error
-        ? error.message
-        : "Rollback konnte nicht gestartet werden.";
-    return Response.json(
-      { error: message },
-      { status: message.includes("Management-Agent") ? 503 : 400 },
-    );
-  }
+    await queueJob(job, run.id);
+    try { await forwardToManagementAgent(job); }
+    catch (error) { await recordDispatchFailure(job, error); }
+    return Response.json({ ok: true, jobId });
+  } catch (error) { return apiError(error); }
 }

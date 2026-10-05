@@ -43,6 +43,27 @@
       "when": 1789980101874,
       "tag": "0005_productive_cable",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1790945392545,
+      "tag": "0006_ordinary_tarot",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1790946082488,
+      "tag": "0007_wakeful_george_stacy",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1790946426732,
+      "tag": "0008_icy_joystick",
+      "breakpoints": true
     }
   ]
 }
