@@ -11,8 +11,10 @@ export async function snapshot(source, destination) {
   mkdirSync(path.dirname(destination), { recursive: true });
   const db = new DatabaseSync(source, { readOnly: true });
   try { await backup(db, destination); } finally { db.close(); }
-  const check = new DatabaseSync(destination, { readOnly: true });
+  const check = new DatabaseSync(destination);
   try {
+    // The archive must remain readable without transient WAL/SHM sidecars.
+    check.exec("PRAGMA journal_mode = DELETE");
     if (check.prepare("PRAGMA quick_check").get().quick_check !== "ok" || check.prepare("PRAGMA foreign_key_check").all().length) throw new Error("Backup integrity check failed.");
   } finally { check.close(); }
   return createHash("sha256").update(readFileSync(destination)).digest("hex");

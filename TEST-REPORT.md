@@ -34,6 +34,8 @@ PowerShellversion `5.1.20348.5622`, PS7 `7.6.6`, Git2.55.0, Codex0.160.0, Docker
 
 Testvolumes `it_lifecycle_v1-1791189535470` und `_restored` bleiben als Belege erhalten; Testcontainer wurden gestoppt. Keine produktive Datenbank/Queue wurde eingebunden. Ein erster Restore-Prueflauf scheiterte am schreibgeschuetzten WAL-Testmount; Zielmount und Testprozess-Cleanup korrigiert, komplette Kette danach erneut gruen.
 
+Ein zusaetzlicher gestoppter Quellvolume-Test bestaetigte einen SQLite-Lockfehler am read-only Mount. Die Betriebs-Sicherung erlaubt jetzt Lockdateien bei weiterhin lesender Datenbankverbindung; der finale Releaselauf prueft echte Manage-Backup-/Restorebefehle nach Webstop. Das Archiv ist durch DELETE-Journal am Sicherungsziel selbststaendig; Restore wird aus genau manifest.json und database.sqlite im schreibgeschuetzten Backupmount geprueft.
+
 Die konkrete Releaseidentitaet steht nach dem abschliessenden, mit Git-SHA gekennzeichneten Neubau in [work/release.json](work/release.json). Deployment darf nur dessen exakt benanntes Image und Revision mit erneut bestandenem Abnahmelauf verwenden; Kandidatentag allein genuegt nicht.
 
 Weitere PS5.1-Belege unter `%TEMP%`: `it-lifecycle-ps-d61d1a2b5c3346ce9e8f266b45270413`, `it-lifecycle-gateway-2f4e01bef9694d21b7579d9a3128789d`, `it-lifecycle-config-007ed02b796440479b690d65be4b9152`, `it-lifecycle-ops-45dbb1111e474e5ab18564e1c0551a1b`, `it-lifecycle-envelope-21097d03d36e4088a733449caaa9a640`.

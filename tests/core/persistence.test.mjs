@@ -36,6 +36,8 @@ test("consistent SQLite backup includes committed WAL data and restore rejects o
   const source = path.join(root, "source.sqlite"), target = path.join(root, "backup.sqlite"), restored = path.join(root, "restore.sqlite");
   const db = database(source); db.exec("PRAGMA journal_mode=WAL; INSERT INTO audit_entries(employee_id,action) VALUES('e','WAL committed')");
   const digest = await snapshot(source, target); restore(target, restored, digest);
+  assert.equal(db.prepare("PRAGMA journal_mode").get().journal_mode, "wal");
+  assert.ok(!readdirSync(root).some((name) => name.startsWith("backup.sqlite-")));
   const read = new DatabaseSync(restored, { readOnly: true });
   assert.equal(read.prepare("SELECT count(*) AS count FROM audit_entries").get().count, 1); read.close();
   assert.throws(() => restore(target, restored, digest), /empty/);
@@ -78,9 +80,10 @@ test("volume backup finds lifecycle database among real Wrangler cache and D1 me
   const cache = path.join(data, "v3", "cache", "miniflare-CacheObject");
   mkdirSync(directory, { recursive: true }); mkdirSync(cache, { recursive: true }); mkdirSync(archive);
   for (const folder of [directory, cache]) { const metadata = new DatabaseSync(path.join(folder, "metadata.sqlite")); metadata.exec("CREATE TABLE _cf_ALARM(id INTEGER)"); metadata.close(); }
-  const source = database(path.join(directory, "lifecycle.sqlite")); source.close();
+  const source = database(path.join(directory, "lifecycle.sqlite")); source.exec("PRAGMA journal_mode=WAL"); source.close();
   const execution = spawnSync(process.execPath, ["scripts/backup.mjs", "backup", data, archive], { encoding: "utf8" });
   assert.equal(execution.status, 0, execution.stderr);
+  assert.deepEqual(readdirSync(archive).sort(), ["database.sqlite", "manifest.json"]);
   const manifest = JSON.parse(readFileSync(path.join(archive, "manifest.json"), "utf8"));
   assert.equal(manifest.relativePath, path.relative(data, path.join(directory, "lifecycle.sqlite")));
   const read = new DatabaseSync(path.join(archive, "database.sqlite"), { readOnly: true });

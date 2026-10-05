@@ -21,3 +21,4 @@ Arbeitsbranch `implementation/v1-isolated`, Worktree `C:\IT-Lifecycle\work\v1`; 
 - Native Implementierer: GPT-6.1 Sol/high (PowerShell), GPT-6.1 Sol/medium (Web); Reviewer GPT-6.1 Sol/high. Modelle verfuegbar, kein Ersatz. Maximal zwei Implementierer, disjunkte Dateien; Hauptagent verantwortet Integration/Staging.
 - Unabhaengige Befunde zu Referenzimport, manuellen Regeln, spaetem Uebergabefehler, Standortcodes und Offboarding-Zugangsanzeige korrigiert und unabhaengig erneut geprueft.
 - Lesende Graph-/Exchange-Probe am 05.10.2026 erfolgreich, 2 freie SPB. Kein Nachweis produktiver Schreibrechte oder Bereitstellungswirkung.
+- Abschlussbefund: Wartungsbackup nach Webstop benoetigt SQLite-Lockdateien; lesende Quelle mit schreibbarem Mount und selbststaendiges DELETE-Journal am Archivziel. Finale Abnahme prueft echte Manage-Backup-/Restorebefehle und ein Archiv aus genau2 Dateien.

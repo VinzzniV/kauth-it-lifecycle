@@ -97,7 +97,8 @@ try{
             if(-not $Image-or -not $Volume-or -not $BackupDirectory){throw 'Image, explicit source Volume and BackupDirectory required.'}
             New-Item -ItemType Directory -Path $BackupDirectory -Force|Out-Null
             $backupPath=(Resolve-Path $BackupDirectory).Path
-            Run-Docker @('run','--rm','--network','none','-v',"${Volume}:/data:ro",'-v',"${backupPath}:/backup",$Image,'node','scripts/backup.mjs','backup','/data','/backup')
+            # SQLite opens source databases read-only; WAL lock sidecars need directory write access.
+            Run-Docker @('run','--rm','--network','none','-v',"${Volume}:/data",'-v',"${backupPath}:/backup",$Image,'node','scripts/backup.mjs','backup','/data','/backup')
         }
         'Restore'{
             if(-not $Image-or -not $Volume-or -not $BackupDirectory-or $Volume-notmatch '^[a-zA-Z0-9_-]+$'){throw 'Image, new explicit Volume and BackupDirectory required.'}

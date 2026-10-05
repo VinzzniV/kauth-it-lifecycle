@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import { createServer } from "node:http";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { chromium } from "playwright-core";
 
@@ -31,6 +31,10 @@ function docker(...args) {
   const response = spawnSync("docker", args, { encoding: "utf8", windowsHide: true });
   if (response.status) throw new Error(`Docker ${args[0]} failed: ${response.stderr}`);
   return response.stdout.trim();
+}
+function operation(command, sourceVolume, backupDirectory) {
+  const result = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "RemoteSigned", "-File", path.join(root, "Manage-ItLifecycle.ps1"), "-Command", command, "-ConfigurationPath", envPath, "-Image", image, "-Volume", sourceVolume, "-BackupDirectory", backupDirectory], { encoding: "utf8", windowsHide: true });
+  if (result.status !== 0) throw new Error(`Isolated ${command} failed: ${result.stderr}\n${result.stdout}`);
 }
 async function waitFor(check, label, timeout = 120000) {
   const deadline = Date.now() + timeout;
@@ -211,9 +215,10 @@ try {
   delayedGateway.closeAllConnections(); await new Promise((resolve) => delayedGateway.close(resolve)); delayedGateway = null;
   passed.push("A lost dispatch response after authenticated completion cannot overwrite the durable completed state");
   const backupRoot = path.join(evidence, "backup"); mkdirSync(backupRoot);
-  docker("run", "--rm", "--network", "none", "-v", `${volume}:/data:ro`, "-v", `${backupRoot}:/backup`, image, "node", "scripts/backup.mjs", "backup", "/data", "/backup");
-  docker("volume", "create", restoredVolume);
-  docker("run", "--rm", "--network", "none", "-v", `${restoredVolume}:/data`, "-v", `${backupRoot}:/backup:ro`, image, "node", "scripts/backup.mjs", "restore", "/data", "/backup");
+  docker("stop", container);
+  operation("Backup", volume, backupRoot);
+  assert.deepEqual(readdirSync(backupRoot).sort(), ["database.sqlite", "manifest.json"]);
+  operation("Restore", restoredVolume, backupRoot);
   // A restored WAL database may create SQLite lock sidecars during its first read.
   const verification = docker("run", "--rm", "--network", "none", "-v", `${restoredVolume}:/data`, image, "node", "-e", "const fs=require('node:fs'),p=require('node:path'),{DatabaseSync}=require('node:sqlite');function find(d){for(const e of fs.readdirSync(d,{withFileTypes:true})){const q=p.join(d,e.name);if(e.isDirectory()){const r=find(q);if(r)return r;}else if(q.endsWith('.sqlite')&&e.name!=='metadata.sqlite')return q;}}const db=new DatabaseSync(find('/data'),{readOnly:true});console.log(JSON.stringify({check:db.prepare('PRAGMA quick_check').get().quick_check,employees:db.prepare('SELECT count(*) AS n FROM employees').get().n,receipts:db.prepare('SELECT count(*) AS n FROM automation_receipts').get().n}));db.close();");
   const verified = JSON.parse(verification); assert.equal(verified.check, "ok"); assert.equal(verified.employees, 1); assert.ok(verified.receipts >= 5);
