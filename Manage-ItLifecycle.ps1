@@ -102,7 +102,9 @@ try{
         }
         'Restore'{
             if(-not $Image-or -not $Volume-or -not $BackupDirectory-or $Volume-notmatch '^[a-zA-Z0-9_-]+$'){throw 'Image, new explicit Volume and BackupDirectory required.'}
-            & docker volume inspect $Volume 1>$null 2>$null;if($LASTEXITCODE-eq0){throw 'Restore requires a NEW volume; existing volumes are never overwritten.'}
+            $existingVolumes=@(& docker volume ls --format '{{.Name}}')
+            if($LASTEXITCODE-ne0){throw 'Cannot verify existing volumes before restore.'}
+            if($existingVolumes-contains$Volume){throw 'Restore requires a NEW volume; existing volumes are never overwritten.'}
             $backupPath=(Resolve-Path $BackupDirectory).Path;Run-Docker @('volume','create',$Volume)
             Run-Docker @('run','--rm','--network','none','-v',"${Volume}:/data",'-v',"${backupPath}:/backup:ro",$Image,'node','scripts/backup.mjs','restore','/data','/backup')
         }

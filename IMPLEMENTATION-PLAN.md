@@ -8,7 +8,7 @@ Arbeitsbranch `implementation/v1-isolated`, Worktree `C:\IT-Lifecycle\work\v1`; 
 2. Automation: operationsabhaengige Vertraege, fruehes Cleanup, WhatIf/Freigabe, Einzelaktionen, GUID-Ruecknahme, persistente Gatewaylieferung und Neustartabgleich implementiert. 20 Agent-/11 Gateway-/3 Konfigurationsfaelle unter echter PS5.1 bestanden.
 3. Web: XLS/XLSX/UTF8/CP1252/CSV-Quoting, Wechsel/Datum, wirksame Stammdaten, manuelle Offboardingaufgaben, Lese-/Widerrufslinks, Mobile-Layout und Ladefehler umgesetzt. 19 Webregressionen bestanden.
 4. Integration: atomare Jobs/Claims/Receipts/Ergebnisse; Browser liest nur; gezielte Wiederholung und manuelle Klaerung; stabile Aktenidentitaet/Eventzuordnung; Diagnose und konsistentes Backup/Restore implementiert. 10 Kernregressionen bestanden.
-5. Betrieb: gebuendelte Setup/Check/Start/Status/Stop/Update/Backup/Restore-Befehle, vorbereitete ACL/HTTPS/Firewall/Startaufgabe, optionaler TLS-Proxy. 4 PS5.1-Betriebsfaelle; echte HTTPS-Probe und Fehlerlog-Tokenredaktion geprueft.
+5. Betrieb: gebuendelte Setup/Check/Start/Status/Stop/Update/Backup/Restore-Befehle, vorbereitete ACL/HTTPS/Firewall/Startaufgabe, optionaler TLS-Proxy. 6 PS5.1-Betriebsfaelle; echte HTTPS-Probe und Fehlerlog-Tokenredaktion geprueft.
 6. Abnahme: vollstaendige Browser/Gateway/Retry/Rollback/Restore-Kette bestanden (work/v1-1791189535470). Reviewer-Recheck ohne weitere bestaetigte Befunde. Exakte abschliessende Release-SHA/Image/Abnahme werden in work/release.json festgehalten.
 
 ## Entscheidungen und Nachweise

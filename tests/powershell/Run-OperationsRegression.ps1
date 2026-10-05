@@ -1,5 +1,5 @@
 [CmdletBinding()]
-param([string]$Workspace='')
+param([string]$Workspace='',[string]$BackupArchive='',[string]$Image='')
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
 if($PSVersionTable.PSVersion.Major-ne5){throw 'Windows PowerShell 5.1 required.'}
@@ -28,4 +28,21 @@ $output=& powershell.exe -NoProfile -NonInteractive -ExecutionPolicy RemoteSigne
 $ErrorActionPreference='Stop'
 if($LASTEXITCODE-eq0-or ($output-join ' ')-notmatch 'new explicit Volume'){throw 'Restore accepted invalid target volume.'}
 $passed.Add('Restore rejects invalid volume before creating or modifying data')
+
+if($BackupArchive){
+    if(-not$Image){throw 'An existing tested image is required for cold-archive restore regression.'}
+    $newVolume='it_lifecycle_ops_restore_'+[guid]::NewGuid().ToString('N')
+    $ErrorActionPreference='Continue'
+    $output=& powershell.exe -NoProfile -NonInteractive -ExecutionPolicy RemoteSigned -File $manager -Command Restore -ConfigurationPath $configPath -Image $Image -Volume $newVolume -BackupDirectory $BackupArchive 2>&1
+    $ErrorActionPreference='Stop'
+    if($LASTEXITCODE-ne0){throw ($output-join ' ')}
+    $created=& docker volume inspect $newVolume --format '{{.Name}}'
+    if($LASTEXITCODE-ne0-or$created-ne$newVolume){throw 'Restore did not create the isolated volume.'}
+    $passed.Add('Restore accepts a missing new volume and a cold archive under real Windows PowerShell5.1')
+    $ErrorActionPreference='Continue'
+    $output=& powershell.exe -NoProfile -NonInteractive -ExecutionPolicy RemoteSigned -File $manager -Command Restore -ConfigurationPath $configPath -Image $Image -Volume $newVolume -BackupDirectory $BackupArchive 2>&1
+    $ErrorActionPreference='Stop'
+    if($LASTEXITCODE-eq0-or($output-join ' ')-notmatch 'NEW volume'){throw 'Restore did not reject an existing isolated volume.'}
+    $passed.Add('Restore refuses to overwrite the volume created by the successful restore')
+}
 @{powershell=$PSVersionTable.PSVersion.ToString();passed=$passed;workspace=$Workspace}|ConvertTo-Json
