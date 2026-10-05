@@ -2,6 +2,7 @@
 
 import { type FormEvent, useEffect, useRef, useState } from "react";
 import { readHrRows } from "@/lib/hr-import";
+import { randomId } from "@/lib/random-id";
 import {
   Activity,
   Bot,
@@ -2667,7 +2668,7 @@ function ExecutionHistory({
     }
     const retryJob = {
       ...preparedJob,
-      jobId: `retry-${crypto.randomUUID()}`,
+      jobId: `retry-${randomId()}`,
       createdAt: new Date().toISOString(),
       requestedMode: "Execute" as const,
       executeApproved: true,

@@ -1,5 +1,7 @@
 # Betrieb der V1
 
+Fuer die am 05.10.2026 ausdruecklich freigegebene lokale HTTP-Testinstallation unter `C:\IT-Lifecycle` gilt die konkrete Anleitung in `work/TEST-INSTALLATION.md`. Ihr manueller Gateway benutzt ausschliesslich isolierte Adapter unter dem vorhandenen Testkonto; Setup/Start/Stop/Update/Backup erfolgen ueber `work/Invoke-TestOperation.ps1` mit PowerShell 7. Dieser Wrapper wartet auf Gatewaybereitschaft. Die folgenden allgemeinen HTTPS-/Dienstanweisungen bleiben fuer die spaetere sichere Betriebsumstellung massgeblich.
+
 Alle Befehle laufen aus der geprüften Arbeitskopie unter Windows PowerShell 5.1. Web und Gateway lesen dieselbe lokale `.env`. `IT_LIFECYCLE_WEB_URL` ist die HTTPS-Webadresse für authentifizierte Ergebnisimporte; `MANAGEMENT_AGENT_URL` die aus dem Container erreichbare HTTPS-Gatewayadresse. Keine Zertifikatsprüfung abschalten. In isolierten Tests dürfen eigene Loopbackports mit `IT_LIFECYCLE_TEST_MODE=1` verwendet werden.
 
 ```powershell

@@ -1,8 +1,8 @@
 # Deployment und Rueckkehr
 
-Status: vorbereiteter Plan; keine Produktionsfreigabe und keine Umstellung. Abnahme- und Imagebelege stehen in TEST-REPORT.md. Arbeitsstand liegt in `C:\IT-Lifecycle\work\v1` auf `implementation/v1-isolated`; Produktion in `C:\IT-Lifecycle` bleibt auf 16755f9 mit Container `kauth-it-lifecycle` und Volume `kauth_it_lifecycle_data`.
+Status: lokale Testumstellung am 05.10.2026 freigegeben, einschliesslich vorlaeufigem HTTP und bestehendem Administratorkonto fuer isolierte Adapter. Hauptverzeichnis ist `C:\IT-Lifecycle`; konkreter Aktivierungsbeleg, Revisions-/Imageidentitaet, aktuelles Datenvolume und Backup stehen in `work/LOCAL-DEPLOYMENT-REPORT.md` und `work/active-deployment-path.txt`. Die urspruengliche V1-Arbeitskopie auf `implementation/v1-isolated` bleibt erhalten. HTTP-Betriebsbefehle: `work/TEST-INSTALLATION.md`; keine Firewall-, PKI- oder realen externen Schreibfreigaben daraus ableiten. Die folgenden HTTPS-/Identitaetsgates gelten fuer den spaeteren sicheren Betrieb.
 
-## Vor einer Freigabe konkret festzulegen
+## Vor spaeterem sicheren Betrieb konkret festzulegen
 
 - Delegierte Gatewayidentitaet (gMSA bevorzugt), Leserecht am Release und M365-Zertifikat/privatem Schluessel; AD-/ADSync-/Exchange-/Graph-/HelpDesk-Rechte je unterstuetzter Aktion. Kein Domain-Admin-Dienst.
 - DNS/SAN/vertrauenswuerdige CA fuer Web und Gateway; Container vertraut Gateway-CA, Windows-Gateway vertraut Web-CA. Kein Abschalten der Zertifikatspruefung. Vorhandene Domain-CA muss gegebenenfalls in das abgeleitete Betriebsimage importiert und dieses nochmals geprueft werden.

@@ -1,3 +1,5 @@
+import { randomId } from "../lib/random-id";
+
 export type LifecycleType = "onboarding" | "change" | "offboarding";
 export type ItemStatus =
   "requested" | "approved" | "active" | "remove" | "removed";
@@ -739,7 +741,7 @@ export function buildAutomationJob(
   return {
     schemaVersion: 1,
     operation: "execute",
-    jobId: `lifecycle-${crypto.randomUUID()}`,
+    jobId: `lifecycle-${randomId()}`,
     createdAt: new Date().toISOString(),
     requestedMode: "WhatIf",
     lifecycleType,
