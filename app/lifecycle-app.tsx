@@ -516,6 +516,7 @@ export function LifecycleApp({ view = "overview" }: { view?: AppView }) {
               />
             </div>
             <Button
+              disabled={loading}
               onClick={() => {
                 setDraft(null);
                 setImportError("");
