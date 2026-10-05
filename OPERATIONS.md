@@ -1,36 +1,52 @@
-# Betrieb der V1
+# Aktive lokale HTTP-Testinstallation
 
-Fuer die am 05.10.2026 ausdruecklich freigegebene lokale HTTP-Testinstallation unter `C:\IT-Lifecycle` gilt die konkrete Anleitung in `work/TEST-INSTALLATION.md`. Ihr manueller Gateway benutzt ausschliesslich isolierte Adapter unter dem vorhandenen Testkonto; Setup/Start/Stop/Update/Backup erfolgen ueber `work/Invoke-TestOperation.ps1` mit PowerShell 7. Dieser Wrapper wartet auf Gatewaybereitschaft. Die folgenden allgemeinen HTTPS-/Dienstanweisungen bleiben fuer die spaetere sichere Betriebsumstellung massgeblich.
+Hauptverzeichnis ist ausschliesslich `C:\IT-Lifecycle`, Branch main. Die aktive Revision und das gepinnte Image stehen in der lokalen `.env`; `Status` zeigt den laufenden Stand. Website: `http://PK-SRVJOB001:8080`; Gateway: Port 8788, vom Container ueber `http://host.docker.internal:8788`. Keine Firewall-, DNS- oder Zertifikatsvertrauensaenderungen vorgenommen.
 
-Alle Befehle laufen aus der geprüften Arbeitskopie unter Windows PowerShell 5.1. Web und Gateway lesen dieselbe lokale `.env`. `IT_LIFECYCLE_WEB_URL` ist die HTTPS-Webadresse für authentifizierte Ergebnisimporte; `MANAGEMENT_AGENT_URL` die aus dem Container erreichbare HTTPS-Gatewayadresse. Keine Zertifikatsprüfung abschalten. In isolierten Tests dürfen eigene Loopbackports mit `IT_LIFECYCLE_TEST_MODE=1` verwendet werden.
+Der Betreiber hat HTTP und `KAUTH\admin.niederwieser` fuer die Testinstallation ausdruecklich freigegeben. Die Anwendung benutzt bestehende Anmeldedaten und unveraenderte Geheimnisse. Die manuelle Aufgabe `Kauth-ITLifecycle-Gateway` laeuft unter dieser angemeldeten Identitaet mit RunLevel Limited, ohne gespeichertes Passwort und ohne Startup-/Logontrigger. Sie ist kein dauerhafter Dienst: nach Windows-Neustart bzw. Abmeldung erneut anmelden und Start ausfuehren. Bei Abmeldung keine laufenden Tests verlieren; vorher Queue abwarten und Stop ausfuehren.
 
-```powershell
-.\Configure-ItLifecycle.ps1
-.\Manage-ItLifecycle.ps1 -Command Check
-.\Manage-ItLifecycle.ps1 -Command Setup -Identity 'KAUTH\svc-lifecycle$' -HttpsThumbprint '<40 Hexzeichen>' -GatewayRemoteAddress '<Container-/Hostnetz>'
-.\Manage-ItLifecycle.ps1 -Command Start
-.\Manage-ItLifecycle.ps1 -Command Status
-.\Manage-ItLifecycle.ps1 -Command Stop
-```
+Das Gateway startet immer `work/Test-GatewayEntrypoint.ps1`. Dieser prueft Identitaet, Testmodus, unveraenderten Git-Testadapter und M365-Schluesselzugriff offline und uebergibt den Testadapter ausdruecklich. AD, M365, HelpDesk, Sync und Mailbox werden nur durch lokale Adapter ersetzt; neue Adapter-Effekte sind keine realen Integrationen. **Das normale Gatewayskript nicht direkt ohne TestAdapterPath starten.** Fuer Tests ausschliesslich synthetische Akten/Anmeldedaten verwenden; keine Auftraege fuer vorhandene reale Akten starten, auch kein reales WhatIf.
 
-Setup zeigt zunächst nur den Plan. Erst ein ausdrücklich genehmigter Aufruf mit `-ApplySetup` reserviert HTTPS, schränkt `.env`/Queue auf SYSTEM, Administratoren und die benannte Identität ein, ergänzt eine begrenzte Firewallregel und registriert eine geplante Startaufgabe. RDP/WinRM und Firewallprofile werden dabei nicht geändert. Die Identität benötigt delegierte AD-/ADSync-Rechte, Leserechte am Code und Zugriff auf ihr M365-Zertifikat. Das HTTPS-Zertifikat liegt mit privatem Schlüssel in `LocalMachine\My`; das M365-Zertifikat muss unter der tatsächlichen Aufgabenidentität erreichbar sein. Bei einem normalen Dienstkonto ist zusätzlich `-TaskCredential (Get-Credential)` erforderlich. Kein Domain-Admin-Dienstkonto verwenden.
+Eine `.env` unter dem Hauptverzeichnis bleibt die einzige technische Konfiguration. Sie ist fuer SYSTEM, lokale Administratoren und das freigegebene Konto geschuetzt. Neue Queue und Adapterzustand: `C:\ProgramData\Kauth\ITLifecycle\TestV1`. Die unveraenderte alte Queue unter `C:\ProgramData\Kauth\ITLifecycle\Queue` bleibt als Altbestand erhalten und wird nicht eingelesen.
 
-Das Gateway speichert Aufträge, DPAPI-Dateien, Prozesszustand, Ergebnis und Importbestätigung in seiner geschützten Queue. Es verarbeitet seriell und wiederholt Ergebnislieferungen bis zur Bestätigung, auch nach Neustart. Ein laufender Kindprozess wird anhand PID und Startzeit beobachtet. Ein verschwundener Prozess erzeugt „Prüfung erforderlich“; seine externen Aktionen werden niemals blind erneut gestartet. Nur nachweislich noch nicht gestartete `accepted`-Aufträge starten nach Neustart. Alte Queue-Dateien erst nach bestätigtem Import und geregelter Aufbewahrungsfrist archivieren; offene Ergebnisse nicht löschen.
+## Betrieb aus PowerShell 7
+
+Diese Befehle explizit mit `pwsh.exe` verwenden. Der Gateway selbst und seine Agenten laufen weiterhin Windows PowerShell 5.1. Die lokalen Betriebswrapper beruecksichtigen die HTTP-Ausnahme, pinnen das Image ueber `.env` und warten nach Taskstart auf Gatewaybereitschaft. Sie veraendern keine systemweite Sicherheitskonfiguration.
 
 ```powershell
-.\Manage-ItLifecycle.ps1 -Command Backup -Image 'kauth/it-lifecycle:<geprüftes Tag>' -Volume '<Quellvolume>' -BackupDirectory 'D:\Backups\lifecycle-<Datum>'
-.\Manage-ItLifecycle.ps1 -Command Restore -Image 'kauth/it-lifecycle:<geprüftes Tag>' -Volume 'lifecycle-restore-<Datum>' -BackupDirectory 'D:\Backups\lifecycle-<Datum>'
-.\Update-Server.ps1 -Revision '<vollständige geprüfte SHA>' -Image 'kauth/it-lifecycle:<geprüftes Tag>' -Volume '<aktuelles Volume>' -BackupDirectory 'D:\Backups\lifecycle-vor-update'
+Set-Location C:\IT-Lifecycle
+pwsh.exe -NoProfile -File .\work\Invoke-TestOperation.ps1 -Command Setup
+pwsh.exe -NoProfile -File .\work\Invoke-TestOperation.ps1 -Command Check
+pwsh.exe -NoProfile -File .\work\Invoke-TestOperation.ps1 -Command Status
+pwsh.exe -NoProfile -File .\work\Invoke-TestOperation.ps1 -Command Stop
+pwsh.exe -NoProfile -File .\work\Invoke-TestOperation.ps1 -Command Start
 ```
 
-Backup erstellt über eine lesende SQLite-Verbindung eine konsistente Momentaufnahme und einen geprüften Hash. Das Quellvolume erlaubt SQLite-Lockdateien auch nach Webstop; fachliche Quelldaten werden nicht geschrieben. Das fertige Archiv wird ausschliesslich am Ziel auf DELETE-Journal umgestellt und besteht aus database.sqlite plus manifest.json; keine WAL-Sidecars archivieren. Restore akzeptiert ausschließlich ein neues Volume. `.env` und Zertifikatsschlüssel sind getrennt in einem zugriffsbeschränkten Backup aufzubewahren; Wiederherstellung unter der geplanten Identität prüfen. Update verlangt die bereits geprüfte Revision und das passend beschriftete Image, eine leere aktive Queue und bestätigte Ergebnisimporte; es sichert vor Migration und prüft Web/Gateway. Es zieht keine mutable Hauptlinie. Für Rückkehr: Gateway stoppen, Backup in ein neues Volume restaurieren, vorheriges Image mit diesem Volume und alter Konfiguration starten, Gesundheitschecks prüfen, Gateway starten. Das migrierte Volume bis zur Ursachenprüfung behalten.
+Setup ist fuer diese Testinstallation idempotent: lokale Datei-/Queue-ACLs und die manuelle Adapteraufgabe pruefen/einrichten. Nicht `Manage -Command Setup -ApplySetup` verwenden: der allgemeine Produktionssetup verlangt HTTPS und wuerde Netz-/HTTP.sys-Regeln einrichten, die hier nicht freigegeben sind. Nicht blind Configure-ItLifecycle ausfuehren: dessen HTTPS-Vorschlaege gelten fuer spaeter. Fuer Start/Update den Wrapper verwenden, weil das allgemeine Update direkt nach Taskstart ohne Bereitschaftswartezeit prueft. PowerShell 7 bewahrt ausserdem die benoetigte Docker-CLI-Argumentquotierung; kein Update unter PS5.1 ausfuehren.
 
-Regressionen: `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy RemoteSigned -File tests/powershell/Run-Regression.ps1`, `Run-GatewayRegression.ps1` und `Run-ConfigurationRegression.ps1`. Diese nutzen ausschließlich lokale Adapter, eigene Queue, Ports und Test-Credentials. Sie bestätigen keine produktive AD-/M365-/HelpDesk-Integration.
+```powershell
+$stamp=Get-Date -Format yyyyMMdd-HHmmss
+$backup="C:\ProgramData\Kauth\ITLifecycle\Backups\manual-$stamp"
+pwsh.exe -NoProfile -File .\work\Invoke-TestOperation.ps1 -Command Backup -BackupDirectory $backup
+# Restore geht ausschliesslich in ein NEUES Volume; nicht das aktive Volume angeben.
+pwsh.exe -NoProfile -File .\work\Invoke-TestOperation.ps1 -Command Restore -Volume "kauth_manual_restore_$($stamp.Replace('-','_'))" -BackupDirectory "$backup\database"
+```
 
-`WEB_TLS_HOST` aktiviert bei den gebuendelten Start-/Status-/Stop-/Updatebefehlen automatisch das HTTPS-Profil. `Check` verlangt dann `web.crt` und `web.key`. `-ConfigurationPath` gilt einheitlich fuer Compose und Gateway; bestehende Geheimnisse werden beibehalten. `Setup -WebRemoteAddress '<freigegebenes Clientnetz>'` ergaenzt nach `-ApplySetup` die begrenzte Web-HTTPS-Regel. Ohne diesen Parameter wird keine pauschale Webregel erzeugt. Firewallprofile und bestehende RDP-/WinRM-Regeln bleiben erhalten; eine derzeit deaktivierte Domaenenfirewall muss der Betreiber im geplanten Wartungsfenster mit geprueften Zugangsregeln behandeln.
+Der Wrapper legt das Backup zugriffsbeschraenkt an und sichert `.env` und die lokalen Testbetriebsskripte getrennt vom konsistenten Datenbankarchiv. Das Datenbankarchiv unter `database` besteht aus database.sqlite und manifest.json. Aktives Datenvolume nach der erfolgreich geprueften Rueckkehr/Umstellung: `kauth_http_v1_return_20261005_122306`; dies steht auch in `.env` und ist der autoritative Backupquellname. Das urspruengliche Volume und alte Images bleiben erhalten. Keine unkontrollierte Volume-Loeschung oder Dateikopie zur Rueckkehr.
 
-Caddy redigiert auch in Fehlerlogs die Request-URI und alle Requestheader; deaktiviertes Accesslogging allein genuegt nicht. Die optionale Proxykomponente ist reine TLS-Terminierung, kein neuer Anwendungsdienst.
+## Gepruefte lokale Updates und Rueckkehr
 
-Mindestlaufzeit Node22.16 wegen `node:sqlite.backup`; getestet22.23.3. Setup-Test: `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy RemoteSigned -File tests/powershell/Run-OperationsRegression.ps1`. Die Browser-Abnahmekette startet `node tests/integration/acceptance.mjs` und legt ausschliesslich eigene Testvolumes, Ports18080/18081/18788, lokale Adapter und synthetische Zugangsdaten an.
+Kein GitHub-Push. Vor Update neue Auftraege auslaufen lassen, Status muss 0 ausstehende Importe melden. Nur bereits gepruefte saubere Gitrevision und passend beschriftetes vorhandenes Image verwenden, `.env`-Releasepin koordiniert aktualisieren; kein impliziter Neubau oder Main-Pull. Der folgende Befehl prueft/aktiviert den aktuellen unveraenderten V1-Stand erneut:
 
-Betriebsannahme fuer V1: taegliches verschluesseltes externes Backup mit 14 Tagesstaenden, zusaetzliche Sicherung vor jedem Update; vorgeschlagenes RPO24h/RTO2h. Diese Ziele sind vor Aktivierung vom Betreiber zu bestaetigen; der lokale Restoretest beweist Datenkonsistenz, keine zugesicherte Wiederanlaufzeit. Konfiguration, HTTPS-Paar und M365-PFX/Schluesselwiederherstellung separat geschuetzt archivieren. Import des M365-Zertifikats und Leserecht am privaten Schluessel unter der tatsaechlichen Gatewayidentitaet pruefen; keine Schluessel in Berichte oder Git exportieren.
+```powershell
+$backup="C:\ProgramData\Kauth\ITLifecycle\Backups\update-$(Get-Date -Format yyyyMMdd-HHmmss)"
+pwsh.exe -NoProfile -File .\work\Invoke-TestOperation.ps1 -Command Update -BackupDirectory $backup
+```
+
+Update prueft Git/Image/Queue/Volume, stoppt Web und Gateway, erstellt Wartungsbackup, migriert und wartet auf Web-/Gatewayhealth. Ein Fehlgate ist keine Freigabe zum Weiterarbeiten: gestoppten Zustand klaeren und mit gesichertem alten Image/Konfiguration aus einem NEU restaurierten Backupvolume zurueckkehren. Eine automatische Rueckkehr wurde beim initialen Deployment tatsaechlich durchlaufen und mit healthy altem Image bestaetigt; der allgemeine Updatewrapper meldet Fehler und ersetzt diese Betreiberentscheidung nicht. Keine externe Wirkung wird durch DB-Restore rueckgaengig gemacht.
+
+Bei spaeterem HTTPS-/Identitaetswechsel den Testwrapper nicht einfach auf echte Aktionen umstellen: Adress-/Zertifikatsvertrauen, delegierte Identitaet und erforderliche Sicherheits-/Netzfreigaben separat festlegen. Reale WhatIf- und Schreibtests benoetigen weiterhin eine gesonderte Freigabe. Zertifikatsschluessel-Restore, externe Backupaufbewahrung und RPO/RTO bleiben fuer den spaeteren Betrieb offen.
+
+
+## Verzeichnis und Unterlagen
+
+README.md ist der Einstieg, OPERATIONS.md die aktuelle Betriebsanleitung. docs/archive enthaelt historische Entwicklungs- und Pruefstaende; docs/planned enthaelt Anforderungen fuer die spaetere HTTPS-/Dienstumstellung. Diese Unterlagen beschreiben keinen aktiven Produktionsbetrieb. Lokale alte Abnahmebelege sind ausserhalb des Repositorys unter C:\ProgramData\Kauth\ITLifecycle\Archives archiviert. work/v1 bleibt die V1-Rueckfallarbeitskopie. work/tools bleibt fuer lokale Entwicklung erhalten. Die drei lokalen Testbetriebsskripte in work bleiben wegen ihrer Task- und Skriptreferenzen an ihrem bisherigen Platz.

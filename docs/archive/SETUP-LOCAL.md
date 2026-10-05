@@ -1,3 +1,5 @@
+ > Historischer Stand beziehungsweise Plan fuer spaeteren HTTPS-Betrieb. Aktuelle Testbetriebsanleitung: [OPERATIONS.md](../../OPERATIONS.md).
+
 # Setup unter Windows
 
 ## Entwicklungsumgebung
@@ -24,5 +26,5 @@ powershell.exe -NoProfile -NonInteractive -ExecutionPolicy RemoteSigned -File te
 4. Systemsetup erst nach Freigabe mit `-ApplySetup` aktivieren. Keine allgemeinen URL-Reservierungen für „Jeder“ verwenden. RDP/WinRM erhalten.
 5. Web-HTTPS als optionales Compose-Profil vorbereiten: geschützte `web.crt`/`web.key` außerhalb des Buildkontexts, `WEB_TLS_HOST`/`WEB_TLS_CERT_DIRECTORY` in `.env`; `docker compose --profile https config --quiet` validiert die Konfiguration.
 
-Direktes Web-HTTP bindet standardmäßig nur an Loopback. Testmodus wird ausschließlich in isolierten Testkonfigurationen gesetzt. Die komplette Start-/Status-/Stop-/Update-/Backup-/Restorefolge steht in [OPERATIONS.md](OPERATIONS.md).
+Direktes Web-HTTP bindet standardmäßig nur an Loopback. Testmodus wird ausschließlich in isolierten Testkonfigurationen gesetzt. Die komplette Start-/Status-/Stop-/Update-/Backup-/Restorefolge steht in [OPERATIONS.md](../../OPERATIONS.md).
 Fuer die ausdruecklich freigegebene lokale HTTP-Testinstallation am 05.10.2026 gilt `work/TEST-INSTALLATION.md`: Hauptverzeichnis `C:\IT-Lifecycle`, bestehendes Testkonto, manuelle Adapteraufgabe, einheitliche `.env`, lokale Betriebswrapper mit PowerShell 7. Die folgenden allgemeinen HTTPS-Setupschritte sind fuer den spaeteren sicheren Betrieb vorgesehen und sollen die freigegebene Testkonfiguration nicht unkontrolliert ersetzen.

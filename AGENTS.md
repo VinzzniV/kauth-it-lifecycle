@@ -12,4 +12,4 @@
 - Lokale Aenderungen und Produktion bewahren; isolierte Worktrees, Datenbanken, Queues, Ports und Tokens. Externe Mutationen nur mit ausdruecklicher Freigabe benannter Aktionen/Objekte.
 - Keine Geheimnisse, private Schluessel, Personaldaten oder Queue-Artefakte in Git, Buildkontext, Logs oder Berichten. HTTPS ausserhalb isolierter Testadapter.
 - Native Unteragenten bei beauftragter Teamarbeit: disjunkte Dateien, maximal zwei Implementierer; Schema/Vertraege/Integration beim Hauptagenten; unabhaengige Pruefung nach Integration; kein paralleles Staging/Committen.
-- Massgeblich sind aktueller Code und Tests. Auditbefunde vor Korrektur verifizieren. Kurzer Arbeitsstand in IMPLEMENTATION-PLAN.md; Betriebsbefehle in OPERATIONS.md.
+- Massgeblich sind aktueller Code und Tests. Auditbefunde vor Korrektur verifizieren. Aktueller Einstieg in README.md und Betriebsbefehle in OPERATIONS.md. Historische Plaene und Pruefberichte in docs/archive, zukuenftige HTTPS-Anforderungen in docs/planned.

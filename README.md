@@ -21,7 +21,7 @@ Statuslinks sind befristete, widerrufbare Leseansichten mit begrenzten Daten. Au
 
 ## Entwicklung und Betrieb
 
-Siehe [SETUP-LOCAL.md](SETUP-LOCAL.md), [OPERATIONS.md](OPERATIONS.md) und [IMPLEMENTATION-PLAN.md](IMPLEMENTATION-PLAN.md).
+Aktuelle Testinstallation: **http://PK-SRVJOB001:8080**, Hauptverzeichnis **C:\IT-Lifecycle**. Setup, Start, Stop, Status, Update, Backup und Restore sind in [OPERATIONS.md](OPERATIONS.md) beschrieben. HTTP und das vorhandene Gatewaykonto sind fuer diesen Testbetrieb freigegeben; externe Systeme werden ausschliesslich durch isolierte Testadapter ersetzt.
 
 ```powershell
 npm ci
@@ -34,4 +34,4 @@ npm run build
 
 Node.js mindestens 22.16; geprüft mit 22.23.3. Der Build verwendet vinext/Vite, der Dockerbetrieb Wrangler/Miniflare mit lokalem D1/SQLite-Volume. Windows-Agenten benötigen Windows PowerShell 5.1; produktive Nutzung verlangt HTTPS und ein delegiertes Gatewaykonto.
 
-Prüfnachweise und Grenzen stehen in [TEST-REPORT.md](TEST-REPORT.md). Produktive externe Änderungen, Main-Merge, Push und Serverumstellung benötigen eine gesonderte Freigabe des konkreten Deploymentplans.
+Historische Entwicklungsplaene, Audits und Pruefberichte stehen in [docs/archive](docs/archive/README.md). Anforderungen fuer die spaetere HTTPS-/Dienstumstellung stehen in [docs/planned](docs/planned/README.md). V1 ist lokal installiert; reale externe Automationen sind noch nicht erfolgreich getestet oder freigegeben. Ein GitHub-Push ist nicht freigegeben.

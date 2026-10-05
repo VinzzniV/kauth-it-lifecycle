@@ -1,3 +1,5 @@
+ > Historischer Stand beziehungsweise Plan fuer spaeteren HTTPS-Betrieb. Aktuelle Testbetriebsanleitung: [OPERATIONS.md](../../OPERATIONS.md).
+
 # V1 implementation
 
 Arbeitsbranch `implementation/v1-isolated`, Worktree `C:\IT-Lifecycle\work\v1`; Ausgangsrevision `16755f9`. Produktion bleibt unveraendert. Main-Merge, Push, produktive Mutationen und Serverumstellung brauchen abschliessende Freigabe.

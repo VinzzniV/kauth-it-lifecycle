@@ -1,3 +1,5 @@
+ > Historischer Stand beziehungsweise Plan fuer spaeteren HTTPS-Betrieb. Aktuelle Testbetriebsanleitung: [OPERATIONS.md](../../OPERATIONS.md).
+
 # Deployment und Rueckkehr
 
 Status: lokale Testumstellung am 05.10.2026 freigegeben, einschliesslich vorlaeufigem HTTP und bestehendem Administratorkonto fuer isolierte Adapter. Hauptverzeichnis ist `C:\IT-Lifecycle`; konkreter Aktivierungsbeleg, Revisions-/Imageidentitaet, aktuelles Datenvolume und Backup stehen in `work/LOCAL-DEPLOYMENT-REPORT.md` und `work/active-deployment-path.txt`. Die urspruengliche V1-Arbeitskopie auf `implementation/v1-isolated` bleibt erhalten. HTTP-Betriebsbefehle: `work/TEST-INSTALLATION.md`; keine Firewall-, PKI- oder realen externen Schreibfreigaben daraus ableiten. Die folgenden HTTPS-/Identitaetsgates gelten fuer den spaeteren sicheren Betrieb.

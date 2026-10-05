@@ -1,3 +1,5 @@
+ > Historischer Stand beziehungsweise Plan fuer spaeteren HTTPS-Betrieb. Aktuelle Testbetriebsanleitung: [OPERATIONS.md](../../OPERATIONS.md).
+
 # Zuordnung der Auditbefunde
 
 Ausgangsaudit: AUDIT-REPORT.md vom02.10.2026, Revision16755f9. Befunde wurden gegen den vorhandenen Code und die aktuelle Umgebung geprueft. Abnahmenachweise stehen in TEST-REPORT.md; produktive Aktivierung ist nicht erfolgt.
