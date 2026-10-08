@@ -1,7 +1,7 @@
 {
   "status": "passed",
   "synthetic": true,
-  "browser": "154.0.4258.53",
+  "browser": "154.0.4258.62",
   "passed": [
     "1440×900: navigation/search, filters/direct records, keyboard focus/Enter/arrows/Escape, summary/result priority, sticky tabs, approval identity, rollback limits, retries/review restriction, public status",
     "1280×720: navigation/search, filters/direct records, keyboard focus/Enter/arrows/Escape, summary/result priority, sticky tabs, approval identity, rollback limits, retries/review restriction, public status",

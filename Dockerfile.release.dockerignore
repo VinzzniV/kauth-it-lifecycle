@@ -1,0 +1,13 @@
+**
+!dist
+!dist/**
+!public
+!public/**
+!drizzle
+!drizzle/**
+!scripts
+!scripts/docker-entrypoint.mjs
+!scripts/backup.mjs
+!wrangler.local.jsonc
+!Dockerfile.release
+!Dockerfile.release.dockerignore

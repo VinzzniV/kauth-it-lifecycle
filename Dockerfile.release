@@ -1,0 +1,14 @@
+# Immutable local release from the established Node/runtime dependency image.
+# Verify this image's ID before building; no worktree mounts in the final image.
+ARG BASE_IMAGE=kauth/it-lifecycle:v1-http-46968c8
+FROM ${BASE_IMAGE}
+ARG GIT_REVISION
+LABEL org.opencontainers.image.revision=$GIT_REVISION
+ENV GIT_REVISION=$GIT_REVISION
+WORKDIR /app
+RUN rm -rf /app/dist /app/public /app/drizzle /app/scripts
+COPY dist ./dist
+COPY public ./public
+COPY drizzle ./drizzle
+COPY scripts/docker-entrypoint.mjs scripts/backup.mjs ./scripts/
+COPY wrangler.local.jsonc ./wrangler.local.jsonc

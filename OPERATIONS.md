@@ -1,4 +1,4 @@
-# Aktive lokale HTTP-Testinstallation
+# Aktive Hauptinstallation
 
 Hauptverzeichnis ist ausschliesslich `C:\IT-Lifecycle`, Branch main. Die aktive Revision und das gepinnte Image stehen in der lokalen `.env`; `Status` zeigt den laufenden Stand. Website: `http://PK-SRVJOB001:8080`; Gateway: Port 8788, vom Container ueber `http://host.docker.internal:8788`. Keine Firewall-, DNS- oder Zertifikatsvertrauensaenderungen vorgenommen.
 
@@ -47,26 +47,27 @@ Update prueft Git/Image/Queue/Volume, stoppt Web und Gateway, erstellt Wartungsb
 Bei spaeterem HTTPS-/Identitaetswechsel den Testwrapper nicht einfach auf echte Aktionen umstellen: Adress-/Zertifikatsvertrauen, delegierte Identitaet und erforderliche Sicherheits-/Netzfreigaben separat festlegen. Reale WhatIf- und Schreibtests benoetigen weiterhin eine gesonderte Freigabe. Zertifikatsschluessel-Restore, externe Backupaufbewahrung und RPO/RTO bleiben fuer den spaeteren Betrieb offen.
 
 
-## Isolierte UI/UX-Vorschau
+## Login und aktueller Release
 
-Arbeitskopie `C:\IT-Lifecycle\work\ui-ux`, Branch `implementation/ui-ux-audit`. URL `http://PK-SRVJOB001:18081` bzw. lokal `http://localhost:18081`. Port 8080 und dessen Konfiguration/Daten bleiben unverändert. Die Vorschau enthält ausschließlich synthetische Leseansichten; Speichern und Auftragserstellung werden blockiert.
+Die Hauptinstallation unter **http://PK-SRVJOB001:8080** enthält die UI/UX-Änderungen, die neue Login-Seite und die angepasste Betriebsdiagnose. Releaseimage: `kauth/it-lifecycle:ui-login-20261008`; die genaue Revision steht in `.env`, im Imagelabel und unter Diagnose. Hauptverzeichnis bleibt `C:\IT-Lifecycle`, Branch main. Die vorherige Revision `46968c8b3c9b5e93b0e8ca48b34d53eb10b59abc` und das Image `kauth/it-lifecycle:v1-http-46968c8` bleiben für die Rückkehr erhalten.
+
+Anmeldung mit den bestehenden `.env`-Zugangsdaten. Signiertes HttpOnly-/SameSite-Lax-Cookie, acht Stunden Laufzeit, Secure bei konfigurierter HTTPS-Adresse. Passwortwechsel macht vorhandene signierte Sitzungen ungültig. Abmelden entfernt das Cookie aus diesem Browser; eine außerhalb des Browsers kopierte Sitzung bleibt bis Ablauf oder Passwortwechsel gültig. Basic bleibt für explizite API-Clients kompatibel; der Browser erhält keine Basic-Passwortaufforderung mehr. Gateway-Ergebnisse verlangen weiterhin ausschließlich den Gateway-Bearer. Anmeldung und Änderungen mit Sitzungscookie prüfen den Ursprung der Anfrage. Die lokale Anmeldebegrenzung gilt pro laufender Workerinstanz und wird bei Neustart zurückgesetzt.
+
+Backups vor der Übernahme: `C:\ProgramData\Kauth\ITLifecycle\Backups\ui-login-preflight-20261008` und `ui-login-maintenance-20261008`. Datenvolume und Geheimnisse bleiben erhalten. Der bestehende HTTP-/Testadapterbetrieb wird durch das UI-Deployment nicht auf echte externe Ausführung umgestellt.
+
+Das unveränderliche Releaseimage enthält die geprüften Buildartefakte ohne Worktree-Mounts. `Dockerfile.release` übernimmt Node und Abhängigkeiten aus dem bereits geprüften Basisimage. Dessen vor dem Build geprüfte Image-ID: `sha256:ebd4c7a269417289c5cd8637c1e57d9a8f2ecda62974654fb03ec67396c8e2f1`. Der Standard-Dockerfile bleibt für vollständige Builds verfügbar.
 
 ```powershell
-Set-Location C:\IT-Lifecycle\work\ui-ux
-# Node-22-Werkzeugpfad bei Bedarf nur für diese PowerShell ergänzen.
+Set-Location C:\IT-Lifecycle
 $env:PATH='C:\IT-Lifecycle\work\tools\node-v22.23.3-win-x64;'+$env:PATH
 npm ci
 npm run build
-docker volume create kauth_ui_ux_preview_data
-docker network inspect kauth-ui-ux-isolated
-# Nur falls noch nicht vorhanden: docker network create kauth-ui-ux-isolated
-docker compose -p kauth-ui-ux -f docker-compose.ui-preview.yml up -d
-node tests/ui/verify-browser.mjs
-# Vorschau stoppen; Volumes/Belege bleiben erhalten:
-docker compose -p kauth-ui-ux -f docker-compose.ui-preview.yml stop
+$revision=git rev-parse HEAD
+# Für einen weiteren Release einen neuen Image-Tag verwenden.
+docker build -f Dockerfile.release --build-arg "GIT_REVISION=$revision" -t kauth/it-lifecycle:NEUER-RELEASE .
 ```
 
-Vor erneutem Build laufende Vorschau stoppen, da die Buildartefakte schreibgeschützt eingebunden sind. Beim Update des Testdatendienstes den Vorschaucontainer neu starten. Das Basisimage `kauth/it-lifecycle:v1-http-46968c8` muss lokal vorhanden sein; kein automatischer Main-Pull oder Produktionsupdate. Testimage und Worktree-Mounts sind im [Umsetzungsbericht](UI-UX-IMPLEMENTATION-REPORT.md) beschrieben.
+Die Vorschaucontainer `kauth-ui-ux-preview` und `kauth-ui-ux-data` sowie deren ausschließlich synthetisches Volume `kauth_ui_ux_preview_data` und eigenes Netz `kauth-ui-ux-isolated` sind entfernt. Port 18081/18082 ist nicht mehr aktiv. Screenshot-/Testbelege und der Entwicklungsworktree bleiben erhalten. `docker-compose.ui-preview.yml` ist nur eine historische bzw. optionale Entwicklungsdefinition; kein Bestandteil des Hauptbetriebs.
 
 Regressionen: `npm test`, `npx tsc --noEmit --incremental false`, `npm run lint`, `npm run build`; vorhandene PowerShell-Suiten mit Windows PowerShell 5.1 und den vorgesehenen lokalen Testadaptern. Für den vorhandenen Integrationstest: `TEST_IMAGE=kauth/it-lifecycle:v1-http-46968c8` und `TEST_SOURCE_OVERLAY=1` nur in der aktuellen Prozessumgebung setzen und `node tests/integration/acceptance.mjs` starten. Er erzeugt eigene Volumes/Container auf 18080/18788; keine echten Jobs starten. Für `Run-NativeModuleRegression.mjs` zunächst `node --import tsx tests/ui/export-whatif.ts`, dann den erzeugten synthetischen Pfad `work/whatif-job.json` übergeben.
 

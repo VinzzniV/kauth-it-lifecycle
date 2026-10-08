@@ -90,10 +90,13 @@ try {
   assert.equal(diagnostics.data.authentication, "enabled");
   passed.push("Docker web/gateway healthy; browser cannot forge gateway results");
   browser = await chromium.launch({ executablePath: "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe", headless: true });
-  const context = await browser.newContext({ httpCredentials: { username: user, password }, viewport: { width: 390, height: 844 } });
+  const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
   const page = await context.newPage();
   const pageErrors = []; page.on("pageerror", (e) => pageErrors.push(e.message));
-  await Promise.all([page.waitForResponse((r) => r.url().endsWith("/api/employees") && r.status() === 200), page.goto(web)]);
+  await page.goto(web);
+  await page.getByLabel("Benutzername", { exact: true }).fill(user);
+  await page.getByLabel("Passwort", { exact: true }).fill(password);
+  await Promise.all([page.waitForResponse((r) => r.url().endsWith("/api/employees") && r.status() === 200), page.getByRole("button", { name: "Anmelden", exact: true }).click()]);
   await page.getByRole("button", { name: "Datei einlesen", exact: true }).click();
   const csv = 'Laufkarte Eintritt\r\nVorname;Jörg\r\nName;Müller\r\nPersonalnummer;TEST-ACCEPTANCE\r\nUnternehmen;Denkingen\r\nAbteilung;IT\r\nEintritt;02.10.2026\r\nIT;X;Benutzerkonto\r\nIT;X;E-Mail-Adresse\r\nIT;X;Notebook';
   await page.locator('input[type="file"]').setInputFiles({ name: "eintritt-test.csv", mimeType: "text/csv", buffer: Buffer.from(csv) });
@@ -150,9 +153,12 @@ try {
   assert.equal(updated.tasks.find((t) => /E-Mail/.test(t.title)).status, "done");
   passed.push("License shortage single retry provisions mailbox and completes email task without duplicate user/ticket");
   browser = await chromium.launch({ executablePath: "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe", headless: true });
-  const internal = await browser.newContext({ httpCredentials: { username: user, password }, viewport: { width: 1440, height: 1000 } });
+  const internal = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
   const tasksPage = await internal.newPage();
   await tasksPage.goto(web + "/aufgaben");
+  await tasksPage.getByLabel("Benutzername", { exact: true }).fill(user);
+  await tasksPage.getByLabel("Passwort", { exact: true }).fill(password);
+  await Promise.all([tasksPage.waitForResponse((r) => r.url().endsWith("/api/employees") && r.status() === 200), tasksPage.getByRole("button", { name: "Anmelden", exact: true }).click()]);
   for (const task of updated.tasks.filter((t) => t.executionType === "manual" && t.status !== "done")) {
     await tasksPage.getByRole("checkbox", { name: `${task.title} erledigen`, exact: true }).click();
     await waitFor(async () => (await people())[0].tasks.find((t) => t.id === task.id)?.status === "done", "manual task completion");

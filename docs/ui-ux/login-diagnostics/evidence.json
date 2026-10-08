@@ -1,0 +1,12 @@
+{
+  "status": "passed",
+  "checks": [
+    "API: page redirect, no browser challenge, invalid/cross-origin login, signed cookie, tamper rejection, cookie CSRF rejection, gateway bearer isolation",
+    "1440x900: keyboard login, errors, visibility toggle, original destination, diagnostics status/refresh/unavailable/stale-error, return navigation, logout/access protection, no overflow",
+    "1280x720: keyboard login, errors, visibility toggle, original destination, diagnostics status/refresh/unavailable/stale-error, return navigation, logout/access protection, no overflow",
+    "390x844: keyboard login, errors, visibility toggle, original destination, diagnostics status/refresh/unavailable/stale-error, return navigation, logout/access protection, no overflow",
+    "Failed-login limiter returns 429 and Retry-After after ten failed attempts"
+  ],
+  "errors": [],
+  "syntheticOnly": true
+}

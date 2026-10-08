@@ -1,5 +1,7 @@
 # UI/UX-Umsetzung der bestehenden V1
 
+Aktualisierung 08.10.2026: Die Übernahme ist inzwischen ausdrücklich beauftragt. Die frühere Vorschau wird nach erfolgreicher Prüfung der Hauptinstallation entfernt. Aktueller Release und Betriebsnachweis: [LOGIN-DIAGNOSTICS-RELEASE.md](LOGIN-DIAGNOSTICS-RELEASE.md). Die Angaben zur Vorschau und ausstehenden Freigabe weiter unten beschreiben den ursprünglichen Abnahmestand vom 05.10.2026.
+
 Stand: 05.10.2026. Auftrag: vollständiger Bericht `C:\IT-Lifecycle\Audit\UI-UX-Audit-Kauth-IT-Lifecycle.md`, K1, W1–W10 und C1. Arbeitsregeln aus AGENTS.md eingehalten.
 
 ## Basis und Isolation

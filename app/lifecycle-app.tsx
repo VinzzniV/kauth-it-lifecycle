@@ -5,6 +5,7 @@ import { readHrRows } from "@/lib/hr-import";
 import { randomId } from "@/lib/random-id";
 import { filterTasks, groupRuns, referenceMetadata, ruleOrigins, runGuidance, stateLabel, statusText, successfulRetry, type TaskFilter } from "@/lib/ui-projections";
 import { ExecutionApprovalInfo, LatestResult, RecordSummary, RollbackInfo } from "./ui-info";
+import { LogoutButton, MobileNavigation } from "./auth-controls";
 import {
   Activity,
   Bot,
@@ -196,8 +197,10 @@ function downloadJob(job: ReturnType<typeof buildAutomationJob>) {
     "application/json",
   );
 }
-function apiFetch(input: RequestInfo | URL, init: RequestInit = {}) {
-  return fetch(input, { ...init, signal: init.signal ?? AbortSignal.timeout(20000) });
+async function apiFetch(input: RequestInfo | URL, init: RequestInit = {}) {
+  const response = await fetch(input, { ...init, signal: init.signal ?? AbortSignal.timeout(20000) });
+  if (response.status === 401) window.location.replace(`/login?next=${encodeURIComponent(window.location.pathname + window.location.search)}`);
+  return response;
 }
 async function collectExecutionResult(
   jobId: string,
@@ -470,9 +473,7 @@ export function LifecycleApp({ view = "overview" }: { view?: AppView }) {
     <div className="min-h-screen bg-[#f3f6f8] text-[#162033]">
       <Sidebar view={view} />
       <main className="lg:pl-[244px]">
-        <nav aria-label="Navigation" className="flex flex-wrap gap-1 bg-[#132238] p-2 text-sm text-white lg:hidden">
-          {[["/", "Übersicht"], ["/mitarbeiter", "Mitarbeiter"], ["/aufgaben", "Aufgaben"], ["/automationen", "Automationen"], ["/stammdaten", "Stammdaten"], ["/diagnose", "Diagnose"]].map(([href, label]) => <a key={href} href={href} className="shrink-0 rounded-lg px-3 py-2 hover:bg-white/10">{label}</a>)}
-        </nav>
+        <MobileNavigation current={{ overview: "/", people: "/mitarbeiter", tasks: "/aufgaben", automations: "/automationen", "master-data": "/stammdaten" }[view]} />
         <header className="sticky top-0 z-10 flex min-h-[76px] flex-wrap items-center justify-between gap-3 border-b border-[#dfe5e8] bg-white/95 px-5 py-3 backdrop-blur lg:px-8">
           <div>
             <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#708090]">
@@ -482,7 +483,8 @@ export function LifecycleApp({ view = "overview" }: { view?: AppView }) {
               {viewMeta[view].title}
             </h1>
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-3">
+            <LogoutButton />
             <div className="relative">
               <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-[#82909c]" />
               <Input
@@ -608,7 +610,7 @@ export function LifecycleApp({ view = "overview" }: { view?: AppView }) {
   );
 }
 
-function Sidebar({ view }: { view: AppView }) {
+export function Sidebar({ view }: { view: AppView | "diagnostics" }) {
   const links: Array<{
     view: AppView;
     href: string;
@@ -668,7 +670,7 @@ function Sidebar({ view }: { view: AppView }) {
             {link.label}
           </a>
         ))}
-        <a className="flex items-center gap-3 rounded-xl px-3 py-3 font-medium text-white/65 hover:bg-white/5" href="/diagnose"><ShieldCheck className="size-4" />Diagnose</a>
+        <a aria-current={view === "diagnostics" ? "page" : undefined} className={`flex items-center gap-3 rounded-xl px-3 py-3 font-medium ${view === "diagnostics" ? "bg-white/10 text-white [&_svg]:text-[#5de1d0]" : "text-white/65 hover:bg-white/5"}`} href="/diagnose"><ShieldCheck className="size-4" />Diagnose</a>
       </nav>
       <div className="mt-auto p-4">
         <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
